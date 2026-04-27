@@ -219,9 +219,19 @@ class PywinautoActiveChatSender:
         return ""
 
     @staticmethod
+    def _chat_input(window):
+        for edit in window.descendants(control_type="Edit"):
+            try:
+                if edit.element_info.automation_id == "chat_input_field":
+                    return edit
+            except Exception:
+                continue
+        raise RuntimeError("没有找到微信聊天输入框。请先打开目标聊天。")
+
+    @staticmethod
     def _has_chat_input(window) -> bool:
         try:
-            window.child_window(auto_id="chat_input_field", control_type="Edit").wrapper_object()
+            PywinautoActiveChatSender._chat_input(window)
             return True
         except Exception:
             return False
@@ -273,10 +283,7 @@ class PywinautoActiveChatSender:
     def _send_message_to_open_chat(window, message: str) -> None:
         from pywinauto.keyboard import send_keys
 
-        edit = window.child_window(
-            auto_id="chat_input_field",
-            control_type="Edit",
-        ).wrapper_object()
+        edit = PywinautoActiveChatSender._chat_input(window)
         edit.click_input()
         send_keys("^a{BACKSPACE}")
         time.sleep(0.2)

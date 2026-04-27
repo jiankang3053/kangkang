@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kangkang Weather</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f3f5f1;
+      --panel: #ffffff;
+      --ink: #151814;
+      --muted: #687064;
+      --line: #dce3d7;
+      --accent: #227348;
+      --accent-2: #295d7a;
+      --warn: #9b5518;
+      --bad: #b3261e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+    .shell {
+      display: grid;
+      grid-template-columns: 292px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+    aside {
+      background: #e8ede4;
+      border-right: 1px solid var(--line);
+      padding: 26px 24px;
+    }
+    main { padding: 26px clamp(20px, 4vw, 48px); }
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: 25px; line-height: 1.15; }
+    h2 { font-size: 17px; line-height: 1.3; }
+    h3 { font-size: 13px; color: var(--muted); font-weight: 700; }
+    p { color: var(--muted); font-size: 13px; line-height: 1.6; }
+    .aside-note { margin-top: 10px; }
+    .side-list { display: grid; gap: 13px; margin-top: 28px; }
+    .side-row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      border-top: 1px solid var(--line);
+      padding-top: 12px;
+      font-size: 13px;
+    }
+    .side-row span:first-child { color: var(--muted); }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: end;
+      gap: 18px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 18px;
+      margin-bottom: 20px;
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: end;
+      justify-content: flex-end;
+    }
+    label {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      min-width: 150px;
+    }
+    select, input {
+      height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--ink);
+      padding: 0 10px;
+      font: inherit;
+    }
+    button {
+      height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--ink);
+      padding: 0 13px;
+      font: inherit;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    button:hover { border-color: #b8c5af; }
+    button.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+      font-weight: 700;
+    }
+    button.secondary {
+      border-color: var(--accent-2);
+      color: var(--accent-2);
+      font-weight: 700;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: minmax(320px, 1.2fr) minmax(280px, .8fr);
+      gap: 22px;
+      align-items: start;
+    }
+    section {
+      border-bottom: 1px solid var(--line);
+      padding: 20px 0;
+      display: grid;
+      gap: 12px;
+    }
+    textarea, pre {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--ink);
+    }
+    textarea {
+      min-height: 390px;
+      resize: vertical;
+      padding: 14px;
+      font: 14px/1.75 "Microsoft YaHei", "Segoe UI", sans-serif;
+    }
+    pre {
+      margin: 0;
+      min-height: 132px;
+      max-height: 360px;
+      overflow: auto;
+      padding: 13px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font: 12px/1.55 Consolas, "Cascadia Mono", monospace;
+      background: #fbfcfa;
+    }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .metric {
+      border-top: 1px solid var(--line);
+      padding-top: 10px;
+      min-height: 58px;
+    }
+    .metric strong { display: block; font-size: 20px; line-height: 1.25; }
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+      margin-top: 3px;
+      overflow-wrap: anywhere;
+    }
+    .status { min-height: 22px; color: var(--muted); font-size: 13px; }
+    .status.ok { color: var(--accent); }
+    .status.bad { color: var(--bad); }
+    .status.warn { color: var(--warn); }
+    .history { display: grid; gap: 8px; }
+    .event {
+      border-top: 1px solid var(--line);
+      padding-top: 8px;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+    .event strong { color: var(--ink); }
+    @media (max-width: 1180px) {
+      .metrics { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 920px) {
+      .shell, .grid { grid-template-columns: 1fr; }
+      aside { border-right: 0; border-bottom: 1px solid var(--line); }
+      .topbar { align-items: stretch; flex-direction: column; }
+      .controls { justify-content: stretch; }
+      label, button { width: 100%; }
+      .metrics { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <h1>Kangkang Weather</h1>
+      <p class="aside-note">Windows 微信天气提醒桌面版</p>
+      <div class="side-list">
+        <div class="side-row"><span>默认目标</span><strong id="defaultRecipient">-</strong></div>
+        <div class="side-row"><span>城市</span><strong id="cityLabel">-</strong></div>
+        <div class="side-row"><span>轮询</span><strong id="interval">-</strong></div>
+        <div class="side-row"><span>下一次检查</span><strong id="nextCheck">-</strong></div>
+        <div class="side-row"><span>数据源</span><strong id="providerCount">-</strong></div>
+      </div>
+    </aside>
+    <main>
+      <div class="topbar">
+        <div>
+          <h2>微信天气控制台</h2>
+          <p>后台按两小时轮询，只有实用风险变化才会补发；夜间变化会留到早上汇总。</p>
+        </div>
+        <div class="controls">
+          <label>目标
+            <select id="recipient"></select>
+          </label>
+          <label>后端
+            <select id="backend">
+              <option value="pywinauto-session">pywinauto-session</option>
+              <option value="pywinauto-active">pywinauto-active</option>
+              <option value="wxauto">wxauto</option>
+            </select>
+          </label>
+          <button id="refresh">刷新预览</button>
+          <button id="check" class="secondary">立即检查</button>
+          <button id="send" class="primary">发送今日天气</button>
+        </div>
+      </div>
+      <div class="grid">
+        <section>
+          <h2>今日预报</h2>
+          <textarea id="message" readonly>正在生成天气预报...</textarea>
+        </section>
+        <div>
+          <section>
+            <h2>当前风险</h2>
+            <div class="metrics">
+              <div class="metric"><strong id="rainRisk">-</strong><span>未来 6 小时最高降雨概率</span></div>
+              <div class="metric"><strong id="weatherRisk">-</strong><span>未来 6 小时较高风险天气</span></div>
+              <div class="metric"><strong id="tempRisk">-</strong><span>今日气温</span></div>
+              <div class="metric"><strong id="sourceRisk">-</strong><span>数据源一致性</span></div>
+            </div>
+          </section>
+          <section>
+            <h2>运行结果</h2>
+            <div id="status" class="status">等待操作。</div>
+            <pre id="result"></pre>
+          </section>
+          <section>
+            <h2>最近轮询</h2>
+            <div id="recentChecks" class="history"></div>
+          </section>
+          <section>
+            <h2>最近发送</h2>
+            <div id="recentSends" class="history"></div>
+          </section>
+          <section>
+            <h2>环境诊断</h2>
+            <button id="diagnostics">刷新诊断</button>
+            <pre id="diagnosticsOutput"></pre>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+  <script>
+    const el = {
+      recipient: document.querySelector("#recipient"),
+      backend: document.querySelector("#backend"),
+      message: document.querySelector("#message"),
+      status: document.querySelector("#status"),
+      result: document.querySelector("#result"),
+      defaultRecipient: document.querySelector("#defaultRecipient"),
+      cityLabel: document.querySelector("#cityLabel"),
+      interval: document.querySelector("#interval"),
+      nextCheck: document.querySelector("#nextCheck"),
+      providerCount: document.querySelector("#providerCount"),
+      rainRisk: document.querySelector("#rainRisk"),
+      weatherRisk: document.querySelector("#weatherRisk"),
+      tempRisk: document.querySelector("#tempRisk"),
+      sourceRisk: document.querySelector("#sourceRisk"),
+      recentChecks: document.querySelector("#recentChecks"),
+      recentSends: document.querySelector("#recentSends"),
+      diagnostics: document.querySelector("#diagnosticsOutput")
+    };
+    let appState = null;
+
+    function setStatus(text, kind = "") {
+      el.status.textContent = text;
+      el.status.className = `status ${kind}`;
+    }
+    async function api(path, options = {}) {
+      const response = await fetch(path, { headers: { "Content-Type": "application/json" }, ...options });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || response.statusText);
+      return data;
+    }
+    function selectedName() {
+      return el.recipient.value || (appState && appState.contact) || "湘楠";
+    }
+    function renderEvents(target, items, emptyText) {
+      target.innerHTML = "";
+      if (!items || !items.length) {
+        target.innerHTML = `<div class="event">${emptyText}</div>`;
+        return;
+      }
+      for (const item of [...items].reverse()) {
+        const div = document.createElement("div");
+        div.className = "event";
+        const when = item.checked_at || item.sent_at || "-";
+        const bits = [];
+        if (item.alerts && item.alerts.length) bits.push(`触发 ${item.alerts.join(", ")}`);
+        if (item.sent) bits.push("已发送");
+        if (item.quiet) bits.push("夜间记录");
+        if (item.dry_run) bits.push("dry-run");
+        if (item.source_disagreement) bits.push("数据源分歧");
+        div.innerHTML = `<strong>${when}</strong><br>${bits.join(" · ") || "无补发"}`;
+        target.appendChild(div);
+      }
+    }
+    function renderMonitor(data) {
+      const info = data.recipients && data.recipients[selectedName()];
+      el.nextCheck.textContent = data.next_check_at ? data.next_check_at.replace("T", " ") : "-";
+      if (!info) return;
+      const risk = info.current_risk || {};
+      el.cityLabel.textContent = info.city_label || "-";
+      el.rainRisk.textContent = risk.future_rain_max == null ? "-" : `${risk.future_rain_max}%`;
+      el.weatherRisk.textContent = risk.future_weather || "-";
+      el.tempRisk.textContent = risk.today_temp_min == null ? "-" : `${risk.today_temp_min}-${risk.today_temp_max}℃`;
+      el.sourceRisk.textContent = risk.source_disagreement ? "有分歧" : (risk.source_count ? `${risk.source_count} 源一致` : "-");
+      el.providerCount.textContent = risk.source_count ? `${risk.source_count} 源` : "-";
+      renderEvents(el.recentChecks, info.recent_checks, "还没有轮询记录。");
+      renderEvents(el.recentSends, info.recent_sends, "还没有发送记录。");
+    }
+    async function loadState() {
+      appState = await api("/api/state");
+      el.defaultRecipient.textContent = appState.contact;
+      el.interval.textContent = `${appState.monitor.interval_minutes} 分钟`;
+      el.backend.value = appState.monitor.backend || "pywinauto-session";
+      el.recipient.innerHTML = "";
+      for (const item of appState.recipients) {
+        const option = document.createElement("option");
+        option.value = item.name;
+        option.textContent = `${item.name} · ${item.city_label}${item.enabled ? "" : "（停用）"}`;
+        option.disabled = !item.enabled;
+        if (item.name === appState.contact) option.selected = true;
+        el.recipient.appendChild(option);
+      }
+    }
+    async function refreshPreview() {
+      setStatus("正在刷新天气预览...");
+      const data = await api(`/api/preview?recipient=${encodeURIComponent(selectedName())}`);
+      el.message.value = data.message;
+      setStatus("预览已更新。", "ok");
+    }
+    async function sendWeather() {
+      setStatus("正在发送到微信...");
+      const data = await api("/api/send-weather", {
+        method: "POST",
+        body: JSON.stringify({ recipient: selectedName(), backend: el.backend.value, real: true })
+      });
+      el.result.textContent = JSON.stringify(data, null, 2);
+      setStatus(data.ok ? "发送完成。" : "发送失败，查看运行结果。", data.ok ? "ok" : "bad");
+      if (data.preview) el.message.value = data.preview;
+      await refreshMonitor();
+    }
+    async function refreshMonitor() {
+      const data = await api("/api/monitor/status");
+      renderMonitor(data);
+    }
+    async function checkMonitor() {
+      setStatus("正在执行 dry-run 检查...");
+      const data = await api("/api/monitor/check", {
+        method: "POST",
+        body: JSON.stringify({ dry_run: true, recipient: selectedName() })
+      });
+      el.result.textContent = JSON.stringify(data, null, 2);
+      setStatus("dry-run 检查完成，没有发送微信。", "ok");
+      await refreshMonitor();
+    }
+    async function refreshDiagnostics() {
+      el.diagnostics.textContent = "读取中...";
+      const data = await api("/api/diagnostics");
+      el.diagnostics.textContent = data.lines.join("\n");
+    }
+    document.querySelector("#refresh").addEventListener("click", refreshPreview);
+    document.querySelector("#send").addEventListener("click", sendWeather);
+    document.querySelector("#check").addEventListener("click", checkMonitor);
+    document.querySelector("#diagnostics").addEventListener("click", refreshDiagnostics);
+    el.recipient.addEventListener("change", () => refreshPreview().then(refreshMonitor).catch(error => setStatus(error.message, "bad")));
+    loadState()
+      .then(refreshPreview)
+      .then(refreshMonitor)
+      .then(refreshDiagnostics)
+      .catch(error => setStatus(error.message, "bad"));
+    setInterval(() => refreshMonitor().catch(() => {}), 30000);
+  </script>
+</body>
+</html>

@@ -9,45 +9,15 @@ import threading
 import time
 from typing import Any
 
-from .config import AppConfig, load_config
+from .config import AppConfig, RecipientConfig, load_config, user_data_dir
 from .weather import (
     _format_temp,
     _rain_level,
     _weather_code_desc,
     build_weather_snapshot,
+    weather_code_severity,
 )
 from .wechat import choose_sender
-
-
-SEVERITY_BY_CODE = {
-    0: 0,
-    1: 1,
-    2: 1,
-    3: 1,
-    45: 1,
-    48: 1,
-    51: 2,
-    53: 2,
-    55: 2,
-    56: 2,
-    57: 2,
-    61: 3,
-    66: 3,
-    80: 3,
-    63: 4,
-    67: 4,
-    71: 4,
-    73: 4,
-    75: 4,
-    81: 4,
-    65: 5,
-    82: 5,
-    85: 4,
-    86: 5,
-    95: 5,
-    96: 6,
-    99: 6,
-}
 
 
 RAIN_LEVEL_ORDER = {"未知": -1, "低": 0, "中": 1, "高": 2}
@@ -70,7 +40,7 @@ def _state_path(config_path: str | None, state_path: str) -> Path:
         return path
     if config_path is not None:
         return Path(config_path).resolve().parent / path
-    return Path.cwd() / path
+    return user_data_dir() / path
 
 
 def _parse_time(value: str) -> dt_time:
@@ -95,7 +65,11 @@ def _row_datetime(row: dict[str, Any]) -> datetime:
     return datetime.fromisoformat(str(row["time"]))
 
 
-def _future_rows(snapshot: dict[str, Any], now: datetime, hours: int = 6) -> list[dict[str, Any]]:
+def _future_rows(
+    snapshot: dict[str, Any],
+    now: datetime,
+    hours: int = 6,
+) -> list[dict[str, Any]]:
     end = now + timedelta(hours=hours)
     rows: list[dict[str, Any]] = []
     for day in snapshot.get("days", [])[:2]:
@@ -107,23 +81,21 @@ def _future_rows(snapshot: dict[str, Any], now: datetime, hours: int = 6) -> lis
     return rows
 
 
-def _severity(code: int | float | None) -> int:
-    try:
-        return SEVERITY_BY_CODE.get(int(code), 0)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _snapshot_signal(snapshot: dict[str, Any], now: datetime) -> dict[str, Any]:
+def _snapshot_signal(
+    snapshot: dict[str, Any],
+    now: datetime,
+    future_hours: int = 6,
+) -> dict[str, Any]:
     days = snapshot.get("days", [])
+    if not days:
+        raise ValueError("天气快照缺少 days 数据。")
     today = days[0]
-    future = _future_rows(snapshot, now)
+    future = _future_rows(snapshot, now, hours=future_hours)
     future_rain = [int(row.get("rain") or 0) for row in future]
     future_codes = [row.get("code") for row in future]
-    future_severities = [_severity(code) for code in future_codes]
-    max_severity = max(future_severities, default=0)
+    future_severities = [weather_code_severity(code) for code in future_codes]
     wettest = max(future, key=lambda row: int(row.get("rain") or 0), default=None)
-    worst = max(future, key=lambda row: _severity(row.get("code")), default=None)
+    worst = max(future, key=lambda row: weather_code_severity(row.get("code")), default=None)
     future_days = []
     for day in days[1:4]:
         level = _rain_level(day.get("rain_max"))
@@ -139,7 +111,7 @@ def _snapshot_signal(snapshot: dict[str, Any], now: datetime) -> dict[str, Any]:
     return {
         "future_rain_max": max(future_rain, default=0),
         "future_weather": _weather_code_desc(wettest.get("code")) if wettest else "未知",
-        "future_severity_max": max_severity,
+        "future_severity_max": max(future_severities, default=0),
         "future_severe_weather": _weather_code_desc(worst.get("code")) if worst else "未知",
         "today_temp_min": _format_temp(today["temp_min"]),
         "today_temp_max": _format_temp(today["temp_max"]),
@@ -148,17 +120,49 @@ def _snapshot_signal(snapshot: dict[str, Any], now: datetime) -> dict[str, Any]:
     }
 
 
+def _snapshot_summary(
+    snapshot: dict[str, Any] | None,
+    now: datetime | None = None,
+    future_hours: int = 6,
+) -> dict[str, Any] | None:
+    if not snapshot:
+        return None
+    now = now or _now()
+    try:
+        signal = _snapshot_signal(snapshot, now, future_hours=future_hours)
+    except Exception:
+        signal = {}
+    days = snapshot.get("days", [])
+    today = days[0] if days else {}
+    return {
+        "created_at": snapshot.get("created_at"),
+        "city_label": snapshot.get("city_label"),
+        "source": snapshot.get("source"),
+        "source_count": snapshot.get("source_count", len(snapshot.get("sources", []))),
+        "source_disagreement": bool(snapshot.get("source_disagreement")),
+        "provider_failures": snapshot.get("provider_failures", []),
+        "today_weather": _weather_code_desc(today.get("code")) if today else None,
+        "today_temp_min": _format_temp(today["temp_min"]) if "temp_min" in today else None,
+        "today_temp_max": _format_temp(today["temp_max"]) if "temp_max" in today else None,
+        "today_rain_max": int(today.get("rain_max") or 0) if today else None,
+        "future_hours": future_hours,
+        "future_rain_max": signal.get("future_rain_max"),
+        "future_weather": signal.get("future_severe_weather") or signal.get("future_weather"),
+    }
+
+
 def evaluate_alerts(
     previous_snapshot: dict[str, Any] | None,
     current_snapshot: dict[str, Any],
     now: datetime | None = None,
+    future_hours: int = 6,
 ) -> list[Alert]:
     if previous_snapshot is None:
         return []
 
     now = now or _now()
-    previous = _snapshot_signal(previous_snapshot, now)
-    current = _snapshot_signal(current_snapshot, now)
+    previous = _snapshot_signal(previous_snapshot, now, future_hours=future_hours)
+    current = _snapshot_signal(current_snapshot, now, future_hours=future_hours)
     alerts: list[Alert] = []
 
     if previous["future_rain_max"] < 50 <= current["future_rain_max"]:
@@ -166,7 +170,7 @@ def evaluate_alerts(
             Alert(
                 key="rain_6h_threshold",
                 title="未来6小时降雨概率升高",
-                detail=f"未来6小时最高降雨概率升至{current['future_rain_max']}%。",
+                detail=f"未来{future_hours}小时最高降雨概率升至{current['future_rain_max']}%。",
             )
         )
 
@@ -176,7 +180,7 @@ def evaluate_alerts(
                 key="rain_6h_jump",
                 title="未来6小时降雨概率明显上升",
                 detail=(
-                    f"未来6小时最高降雨概率由{previous['future_rain_max']}%"
+                    f"未来{future_hours}小时最高降雨概率由{previous['future_rain_max']}%"
                     f"升至{current['future_rain_max']}%。"
                 ),
             )
@@ -190,7 +194,7 @@ def evaluate_alerts(
             Alert(
                 key="weather_upgrade_6h",
                 title="未来6小时天气转差",
-                detail=f"未来6小时可能出现{current['future_severe_weather']}。",
+                detail=f"未来{future_hours}小时可能出现{current['future_severe_weather']}。",
             )
         )
 
@@ -227,13 +231,26 @@ def evaluate_alerts(
                 )
             )
 
+    if current_snapshot.get("source_disagreement"):
+        alerts.append(
+            Alert(
+                key="source_disagreement",
+                title="多源预报分歧",
+                detail="多源预报存在分歧，已按偏高风险提醒。",
+            )
+        )
+
     return alerts
 
 
-def _format_future_rows(snapshot: dict[str, Any], now: datetime) -> list[str]:
-    rows = _future_rows(snapshot, now)
+def _format_future_rows(
+    snapshot: dict[str, Any],
+    now: datetime,
+    future_hours: int,
+) -> list[str]:
+    rows = _future_rows(snapshot, now, hours=future_hours)
     lines = []
-    for row in rows[:6]:
+    for row in rows[:future_hours]:
         row_time = _row_datetime(row)
         lines.append(
             f"{row_time.strftime('%H:%M')} "
@@ -248,19 +265,20 @@ def build_alert_message(
     snapshot: dict[str, Any],
     suppressed: bool = False,
     now: datetime | None = None,
+    future_hours: int = 6,
 ) -> str:
     now = now or _now()
     header = "【夜间天气变化汇总】" if suppressed else "【天气变化提醒】"
     lines = [
         header,
         "",
-        "检测到天气预报有变化：",
+        "天气预报有新变化：",
         *[f"- {alert.detail}" for alert in alerts],
         "",
-        "未来6小时：",
-        *_format_future_rows(snapshot, now),
+        f"未来{future_hours}小时：",
+        *_format_future_rows(snapshot, now, future_hours),
         "",
-        "建议及时查看天气，必要时携带雨具或调整出行安排。",
+        "建议按偏高风险准备，必要时携带雨具或调整出行。",
     ]
     return "\n".join(lines)
 
@@ -279,11 +297,12 @@ class WeatherMonitor:
             "next_check_at": None,
             "last_result": "尚未检查。",
             "last_send": None,
+            "recipients": {},
         }
 
     @property
     def app_config(self) -> AppConfig:
-        return load_config(self.config_path)
+        return load_config(self.config_path, create_user_config=self.config_path is None)
 
     @property
     def state_file(self) -> Path:
@@ -309,9 +328,11 @@ class WeatherMonitor:
         with self._lock:
             status = dict(self._last_status)
         config = self.app_config
+        state = self._load_state()
+        recipient_state = state.get("recipients", {})
         status.update(
             {
-                "contact": config.monitor.contact,
+                "contact": config.contact,
                 "backend": config.monitor.backend,
                 "interval_minutes": config.monitor.interval_minutes,
                 "quiet_hours": {
@@ -319,6 +340,21 @@ class WeatherMonitor:
                     "end": config.monitor.quiet_end,
                 },
                 "state_path": str(self.state_file),
+                "recipients": {
+                    recipient.name: {
+                        "enabled": recipient.enabled,
+                        "city_label": recipient.city_label,
+                        "last_check_at": recipient_state.get(recipient.name, {}).get("last_check_at"),
+                        "last_result": recipient_state.get(recipient.name, {}).get("last_result"),
+                        "current_risk": _snapshot_summary(
+                            recipient_state.get(recipient.name, {}).get("last_snapshot"),
+                            future_hours=config.monitor.future_hours,
+                        ),
+                        "recent_checks": recipient_state.get(recipient.name, {}).get("recent_checks", [])[-5:],
+                        "recent_sends": recipient_state.get(recipient.name, {}).get("recent_sends", [])[-5:],
+                    }
+                    for recipient in config.recipients
+                },
             }
         )
         return status
@@ -326,14 +362,17 @@ class WeatherMonitor:
     def _load_state(self) -> dict[str, Any]:
         path = self.state_file
         if not path.exists():
-            return {}
+            return {"recipients": {}}
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            state = json.loads(path.read_text(encoding="utf-8"))
+            state.setdefault("recipients", {})
+            return state
         except Exception:
-            return {}
+            return {"recipients": {}}
 
     def _save_state(self, state: dict[str, Any]) -> None:
         path = self.state_file
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             json.dumps(state, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
@@ -350,7 +389,7 @@ class WeatherMonitor:
             next_check = now + timedelta(minutes=config.monitor.interval_minutes)
             self._set_status(next_check_at=next_check.isoformat(timespec="seconds"))
             try:
-                self.check_once(real_send=True, force=False)
+                self.check_once(real_send=True, recipient_name=None)
             except Exception as exc:
                 self._set_status(
                     last_check_at=_now().isoformat(timespec="seconds"),
@@ -360,47 +399,119 @@ class WeatherMonitor:
             if self._stop.wait(wait_seconds):
                 break
 
-    def check_once(self, real_send: bool, force: bool = True) -> dict[str, Any]:
+    def _recipient_weather_snapshot(
+        self,
+        config: AppConfig,
+        recipient: RecipientConfig,
+    ) -> dict[str, Any]:
+        weather_config = recipient.weather_config(
+            timeout_seconds=config.providers.timeout_seconds,
+            language=config.providers.language,
+        )
+        return build_weather_snapshot(
+            weather_config,
+            comparison_models=config.providers.comparison_models,
+            fallback_wttr=config.providers.fallback_wttr,
+        )
+
+    def _append_limited(
+        self,
+        items: list[dict[str, Any]],
+        item: dict[str, Any],
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        return [*items, item][-limit:]
+
+    def check_once(
+        self,
+        real_send: bool,
+        recipient_name: str | None = None,
+    ) -> dict[str, Any]:
         config = self.app_config
+        recipients = [
+            config.recipient_by_name(recipient_name)
+        ] if recipient_name else [recipient for recipient in config.recipients if recipient.enabled]
+        state = self._load_state()
+        state.setdefault("recipients", {})
+        results = []
+        for recipient in recipients:
+            results.append(self._check_recipient(config, recipient, state, real_send=real_send))
+        self._save_state(state)
+        checked_at = _now().isoformat(timespec="seconds")
+        message = "；".join(result["message"] for result in results) if results else "没有启用的目标。"
+        self._set_status(
+            enabled=config.monitor.enabled,
+            running=self._thread is not None,
+            last_check_at=checked_at,
+            last_result=message,
+            last_send=next((r.get("send_result") for r in results if r.get("send_result")), None),
+        )
+        return {
+            "ok": all(result.get("ok", False) for result in results),
+            "checked_at": checked_at,
+            "dry_run": not real_send,
+            "results": results,
+        }
+
+    def _check_recipient(
+        self,
+        config: AppConfig,
+        recipient: RecipientConfig,
+        state: dict[str, Any],
+        real_send: bool,
+    ) -> dict[str, Any]:
         monitor = config.monitor
         now = _now()
-        state = self._load_state()
-        previous = state.get("last_snapshot")
-        current = build_weather_snapshot(config.weather)
+        recipient_state = state["recipients"].setdefault(recipient.name, {})
+        previous = recipient_state.get("last_snapshot")
+        current = self._recipient_weather_snapshot(config, recipient)
         day_key = _today_key(now)
-        sent_by_day = state.setdefault("sent_alert_keys", {})
+        sent_by_day = recipient_state.setdefault("sent_alert_keys", {})
         sent_today = set(sent_by_day.get(day_key, []))
         suppressed_alerts = [
             Alert(**item)
-            for item in state.get("suppressed_alerts", [])
+            for item in recipient_state.get("suppressed_alerts", [])
             if isinstance(item, dict) and {"key", "title", "detail"} <= set(item)
         ]
 
-        alerts = evaluate_alerts(previous, current, now=now)
+        alerts = evaluate_alerts(
+            previous,
+            current,
+            now=now,
+            future_hours=monitor.future_hours,
+        )
         active_alerts = [alert for alert in alerts if alert.key not in sent_today]
         quiet = _is_quiet(now, monitor.quiet_start, monitor.quiet_end)
-        result = {
+        result: dict[str, Any] = {
             "ok": True,
+            "recipient": recipient.name,
             "checked_at": now.isoformat(timespec="seconds"),
+            "dry_run": not real_send,
             "baseline_created": previous is None,
             "quiet": quiet,
             "alerts": [asdict(alert) for alert in alerts],
             "sent": False,
             "send_result": None,
             "message": "",
+            "source_count": current.get("source_count", 0),
+            "source_disagreement": current.get("source_disagreement", False),
+            "provider_failures": current.get("provider_failures", []),
         }
 
         if previous is None:
-            result["message"] = "首次轮询只建立天气基准，不自动发送。"
+            result["message"] = f"{recipient.name}：首次轮询只建立天气基准。"
         elif quiet and active_alerts:
-            state["suppressed_alerts"] = [asdict(alert) for alert in active_alerts]
-            result["message"] = "当前在夜间免打扰时段，已记录变化但未发送。"
+            recipient_state["suppressed_alerts"] = [asdict(alert) for alert in active_alerts]
+            result["message"] = f"{recipient.name}：夜间免打扰，已记录变化但未发送。"
         else:
-            pending = active_alerts
-            suppressed_send = False
-            if not pending and suppressed_alerts:
-                pending = [alert for alert in suppressed_alerts if alert.key not in sent_today]
-                suppressed_send = True
+            pending_by_key = {
+                alert.key: alert
+                for alert in suppressed_alerts
+                if alert.key not in sent_today
+            }
+            pending_by_key.update({alert.key: alert for alert in active_alerts})
+            pending = list(pending_by_key.values())
+            suppressed_send = bool(suppressed_alerts and pending)
 
             if pending:
                 message = build_alert_message(
@@ -408,31 +519,50 @@ class WeatherMonitor:
                     current,
                     suppressed=suppressed_send,
                     now=now,
+                    future_hours=monitor.future_hours,
                 )
                 sender = choose_sender(
                     real_send=real_send,
                     backend=monitor.backend,
                     window_handle=self.window_handle,
                 )
-                send_result = sender.send(monitor.contact, message)
-                result["sent"] = send_result.ok
+                send_result = sender.send(recipient.name, message)
+                result["ok"] = send_result.ok
+                result["sent"] = bool(real_send and send_result.ok)
                 result["send_result"] = asdict(send_result)
                 result["message"] = message
                 if send_result.ok:
-                    sent_today.update(alert.key for alert in pending)
-                    state["suppressed_alerts"] = []
+                    if real_send:
+                        sent_today.update(alert.key for alert in pending)
+                        recipient_state["suppressed_alerts"] = []
+                    recipient_state["recent_sends"] = self._append_limited(
+                        recipient_state.get("recent_sends", []),
+                        {
+                            "sent_at": result["checked_at"],
+                            "dry_run": not real_send,
+                            "alerts": [alert.key for alert in pending],
+                            "ok": send_result.ok,
+                            "delivered": bool(real_send and send_result.ok),
+                        },
+                        monitor.daily_history_limit,
+                    )
             else:
-                result["message"] = "没有达到补发条件。"
+                result["message"] = f"{recipient.name}：没有达到补发条件。"
 
+        recipient_state["last_snapshot"] = current
+        recipient_state["last_check_at"] = result["checked_at"]
+        recipient_state["last_result"] = result["message"]
         sent_by_day[day_key] = sorted(sent_today)
-        state["last_snapshot"] = current
-        state["last_check_at"] = result["checked_at"]
-        self._save_state(state)
-        self._set_status(
-            enabled=monitor.enabled,
-            running=self._thread is not None,
-            last_check_at=result["checked_at"],
-            last_result=result["message"],
-            last_send=result["send_result"],
+        recipient_state["recent_checks"] = self._append_limited(
+            recipient_state.get("recent_checks", []),
+            {
+                "checked_at": result["checked_at"],
+                "alerts": [alert["key"] for alert in result["alerts"]],
+                "sent": result["sent"],
+                "quiet": result["quiet"],
+                "source_count": result["source_count"],
+                "source_disagreement": result["source_disagreement"],
+            },
+            monitor.daily_history_limit,
         )
         return result

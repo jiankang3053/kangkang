@@ -1,20 +1,45 @@
 {
+  "app": {
+    "name": "KangkangWeather",
+    "version": "2.0.0",
+    "host": "127.0.0.1",
+    "port": 8766,
+    "open_browser_on_start": true
+  },
   "contact": "湘楠",
-  "weather": {
-    "city_query": "Jiayu County",
-    "city_label": "嘉鱼县",
+  "recipients": [
+    {
+      "name": "湘楠",
+      "city_label": "嘉鱼县",
+      "latitude": 29.9724209,
+      "longitude": 113.9335326,
+      "enabled": true
+    }
+  ],
+  "providers": {
     "timeout_seconds": 20,
     "language": "zh-cn",
-    "latitude": 29.9724209,
-    "longitude": 113.9335326
+    "primary": "open_meteo_best_match",
+    "comparison_models": [
+      "gfs_seamless",
+      "icon_seamless",
+      "cma_grapes_global"
+    ],
+    "fallback_wttr": true
   },
   "monitor": {
     "enabled": true,
     "interval_minutes": 120,
-    "contact": "湘楠",
     "backend": "pywinauto-session",
     "quiet_start": "22:00",
     "quiet_end": "07:00",
-    "state_path": "weather_poll_state.json"
+    "state_path": "weather_poll_state.json",
+    "future_hours": 6,
+    "daily_history_limit": 5
+  },
+  "release": {
+    "package_name": "KangkangWeather",
+    "version": "2.0.0",
+    "output_dir": "dist"
   }
 }

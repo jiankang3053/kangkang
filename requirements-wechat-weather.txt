@@ -1,5 +1,7 @@
 requests
 pywinauto
+pystray
+pillow
 
 # Optional: wxauto supports selected Python versions and is not required
 # for the default pywinauto-session backend.

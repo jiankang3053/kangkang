@@ -4,7 +4,6 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Port = 8766
 $Url = "http://127.0.0.1:$Port/"
 $Python = "python"
-$Config = Join-Path $Root "wechat_weather_config.example.json"
 $Stdout = Join-Path $Root "wechat_weather_server.log"
 $Stderr = Join-Path $Root "wechat_weather_server.err.log"
 
@@ -25,16 +24,12 @@ function Test-PortOpen {
     }
 }
 
+$StartedTray = $false
 if (-not (Test-PortOpen -HostName "127.0.0.1" -PortNumber $Port)) {
+    $StartedTray = $true
     Start-Process `
         -FilePath $Python `
-        -ArgumentList @(
-            "-m", "wechat_weather.cli",
-            "serve",
-            "--config", $Config,
-            "--window-handle", "199668",
-            "--port", "$Port"
-        ) `
+        -ArgumentList @("-m", "wechat_weather.cli", "tray") `
         -WorkingDirectory $Root `
         -WindowStyle Hidden `
         -RedirectStandardOutput $Stdout `
@@ -48,4 +43,6 @@ if (-not (Test-PortOpen -HostName "127.0.0.1" -PortNumber $Port)) {
     }
 }
 
-Start-Process $Url
+if (-not $StartedTray) {
+    Start-Process $Url
+}

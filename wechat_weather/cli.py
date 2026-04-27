@@ -23,14 +23,21 @@ def _print_result(result) -> int:
 
 def cmd_send_weather(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    contact = args.contact or config.contact
-    message = build_weather_message(config.weather)
+    recipient = config.recipient_by_name(args.contact or config.contact)
+    weather = recipient.weather_config(
+        timeout_seconds=config.providers.timeout_seconds,
+        language=config.providers.language,
+    )
+    message = build_weather_message(
+        weather,
+        comparison_models=config.providers.comparison_models,
+    )
     sender = choose_sender(
         real_send=args.real,
         backend=args.backend,
         window_handle=args.window_handle,
     )
-    return _print_result(sender.send(contact, message))
+    return _print_result(sender.send(recipient.name, message))
 
 
 def cmd_send_text(args: argparse.Namespace) -> int:
@@ -63,6 +70,32 @@ def cmd_serve(args: argparse.Namespace) -> int:
         config=args.config,
         window_handle=args.window_handle,
     )
+    return 0
+
+
+def cmd_monitor_check(args: argparse.Namespace) -> int:
+    from .monitor import WeatherMonitor
+
+    monitor = WeatherMonitor(config_path=args.config, window_handle=args.window_handle)
+    result = monitor.check_once(
+        real_send=not args.dry_run,
+        recipient_name=args.recipient,
+    )
+    print(result)
+    return 0 if result.get("ok") else 1
+
+
+def cmd_tray(args: argparse.Namespace) -> int:
+    from .tray import run_tray
+
+    run_tray(config_path=args.config, window_handle=args.window_handle)
+    return 0
+
+
+def cmd_build_package(args: argparse.Namespace) -> int:
+    from .packaging import build_package
+
+    build_package(config_path=args.config, output_dir=args.output_dir)
     return 0
 
 
@@ -124,10 +157,27 @@ def build_parser() -> argparse.ArgumentParser:
 
     serve = subparsers.add_parser("serve", help="Run the local browser console.")
     serve.add_argument("--host", default="127.0.0.1")
-    serve.add_argument("--port", type=int, default=8765)
-    serve.add_argument("--config", default="wechat_weather_config.example.json")
+    serve.add_argument("--port", type=int, default=8766)
+    serve.add_argument("--config")
     serve.add_argument("--window-handle", type=int)
     serve.set_defaults(func=cmd_serve)
+
+    monitor_check = subparsers.add_parser("monitor-check", help="Run one monitor check.")
+    monitor_check.add_argument("--config")
+    monitor_check.add_argument("--window-handle", type=int)
+    monitor_check.add_argument("--recipient", help="Recipient name. Defaults to all enabled recipients.")
+    monitor_check.add_argument("--dry-run", action="store_true", help="Do not send WeChat messages.")
+    monitor_check.set_defaults(func=cmd_monitor_check)
+
+    tray = subparsers.add_parser("tray", help="Run the Windows tray app.")
+    tray.add_argument("--config", default=None)
+    tray.add_argument("--window-handle", type=int)
+    tray.set_defaults(func=cmd_tray)
+
+    build_package_cmd = subparsers.add_parser("build-package", help="Build Windows EXE zip package.")
+    build_package_cmd.add_argument("--config", default="wechat_weather_config.example.json")
+    build_package_cmd.add_argument("--output-dir", default="dist")
+    build_package_cmd.set_defaults(func=cmd_build_package)
 
     return parser
 

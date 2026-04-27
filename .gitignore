@@ -18,6 +18,11 @@ xwechat_files/
 venv/
 env/
 
+# Build output
+build/
+dist/
+*.spec
+
 # OS/editor noise
 .DS_Store
 Thumbs.db

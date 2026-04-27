@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from .config import load_config
 from .monitor import WeatherMonitor
@@ -335,6 +335,14 @@ INDEX_HTML = """<!doctype html>
 """
 
 
+def _index_html() -> str:
+    path = Path(__file__).with_name("web_console.html")
+    try:
+        return path.read_text(encoding="utf-8")
+    except Exception:
+        return INDEX_HTML
+
+
 class WeatherServer(ThreadingHTTPServer):
     def __init__(
         self,
@@ -350,7 +358,7 @@ class WeatherServer(ThreadingHTTPServer):
 
     @property
     def app_config(self):
-        return load_config(self.config_path)
+        return load_config(self.config_path, create_user_config=self.config_path is None)
 
 
 class WeatherRequestHandler(BaseHTTPRequestHandler):
@@ -385,7 +393,7 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         try:
             if parsed.path == "/":
-                self._send_bytes(200, INDEX_HTML.encode("utf-8"), "text/html; charset=utf-8")
+                self._send_bytes(200, _index_html().encode("utf-8"), "text/html; charset=utf-8")
             elif parsed.path == "/favicon.ico":
                 self._send_bytes(204, b"", "image/x-icon")
             elif parsed.path == "/api/state":
@@ -393,18 +401,30 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(
                     200,
                     {
+                        "app": asdict(config.app),
                         "contact": config.contact,
-                        "weather": asdict(config.weather),
+                        "recipients": [asdict(item) for item in config.recipients],
+                        "providers": asdict(config.providers),
                         "monitor": asdict(config.monitor),
+                        "release": asdict(config.release),
                     },
                 )
             elif parsed.path == "/api/preview":
                 config = self.server.app_config
+                query = parse_qs(parsed.query)
+                recipient = config.recipient_by_name((query.get("recipient") or [None])[0])
+                weather = recipient.weather_config(
+                    timeout_seconds=config.providers.timeout_seconds,
+                    language=config.providers.language,
+                )
                 self._send_json(
                     200,
                     {
-                        "contact": config.contact,
-                        "message": build_weather_message(config.weather),
+                        "contact": recipient.name,
+                        "message": build_weather_message(
+                            weather,
+                            comparison_models=config.providers.comparison_models,
+                        ),
                     },
                 )
             elif parsed.path == "/api/diagnostics":
@@ -421,9 +441,10 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
         try:
             body = self._read_json()
             if parsed.path == "/api/monitor/check":
+                real_send = bool(body.get("real", False)) and not bool(body.get("dry_run", False))
                 result = self.server.monitor.check_once(
-                    real_send=bool(body.get("real", False)),
-                    force=True,
+                    real_send=real_send,
+                    recipient_name=body.get("recipient"),
                 )
                 self._send_json(200, result)
                 return
@@ -433,16 +454,25 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
                 return
 
             config = self.server.app_config
-            contact = str(body.get("contact") or config.contact)
+            recipient = config.recipient_by_name(
+                str(body.get("recipient") or body.get("contact") or config.contact)
+            )
             backend = str(body.get("backend") or "pywinauto-session")
             real = bool(body.get("real", False))
-            message = build_weather_message(config.weather)
+            weather = recipient.weather_config(
+                timeout_seconds=config.providers.timeout_seconds,
+                language=config.providers.language,
+            )
+            message = build_weather_message(
+                weather,
+                comparison_models=config.providers.comparison_models,
+            )
             sender = choose_sender(
                 real_send=real,
                 backend=backend,
                 window_handle=self.server.window_handle,
             )
-            result = sender.send(contact, message)
+            result = sender.send(recipient.name, message)
             payload = asdict(result)
             self._send_json(200 if result.ok else 409, payload)
         except Exception as exc:
@@ -470,8 +500,8 @@ def run_server(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Local web console for WeChat weather sending.")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--config", default="wechat_weather_config.example.json")
+    parser.add_argument("--port", type=int, default=8766)
+    parser.add_argument("--config")
     parser.add_argument("--window-handle", type=int)
     return parser
 

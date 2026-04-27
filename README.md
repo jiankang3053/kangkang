@@ -1,51 +1,46 @@
-# 微信天气发送台
+# Kangkang Weather v2.0
 
-一个运行在 Windows 本地的微信天气预报发送工具。它会读取 Open-Meteo 天气数据，通过 Windows 微信客户端自动发送到指定会话。
-
-当前默认目标会话：`湘楠`。
+Windows 微信天气提醒桌面版。程序在本机读取天气预报，通过已登录的 Windows 微信客户端把日报或风险变化提醒发送到指定会话。默认目标是 `湘楠`，默认城市是 `嘉鱼县`。
 
 ## 功能
 
-- 浏览器本地控制台：预览天气、手动发送、查看诊断和轮询状态。
-- 完整天气预报：按 3 小时区间展示今日天气和降雨概率，并给出未来 3 天概要。
-- 自动轮询：服务启动后每 2 小时检查一次天气变化。
-- 智能补发：只有降雨概率明显升高、天气转差、气温明显变化或未来降雨等级升级时才补发。
-- 夜间免打扰：`22:00-07:00` 只记录变化，不主动发送微信。
+- 托盘常驻：打开控制台、立即检查、发送今日天气、开机自启、退出。
+- 浏览器控制台：查看预报、当前风险、数据源一致性、最近轮询、最近发送和环境诊断。
+- 多目标配置：配置文件使用 `recipients` 列表，默认只启用 `湘楠`。
+- 多源天气校验：Open-Meteo `best_match` 主源，加 `gfs_seamless`、`icon_seamless`、`cma_grapes_global` 交叉校验；全部失败时尝试 wttr.in 兜底。
+- 自动轮询：默认每 2 小时检查一次，第一次只建立基准。
+- 少打扰补发：只在降雨突增、天气升级、温差明显、明后天降雨等级升级或多源分歧时补发短提醒。
+- 夜间抑制：`22:00-07:00` 只记录变化，早上风险仍存在时汇总提醒。
 
-## 环境要求
-
-- Windows
-- 已登录 Windows 微信客户端
-- Python 3.10+，当前开发环境使用 Python 3.14
-- 目标会话需要在微信左侧会话列表中可见，默认是 `湘楠`
-
-安装依赖：
+## 安装
 
 ```powershell
-python -m pip install -r requirements-wechat-weather.txt
+python -m pip install -r .\requirements-wechat-weather.txt
 ```
 
-## 启动本地控制台
+微信发送默认使用 `pywinauto-session`。目标会话需要在微信左侧会话列表可见，否则 UIAutomation 不能稳定打开它。
+
+## 启动桌面版
 
 ```powershell
-python -m wechat_weather.cli serve --config .\wechat_weather_config.example.json --window-handle 199668 --port 8766
+python -m wechat_weather.cli tray
 ```
 
-浏览器打开：
+首次不传 `--config` 时会自动创建用户配置：
+
+```text
+%APPDATA%\KangkangWeather\config.json
+```
+
+本地控制台默认地址：
 
 ```text
 http://127.0.0.1:8766/
 ```
 
-如果本机微信窗口句柄变化，可以先运行诊断：
+## CLI
 
-```powershell
-python -m wechat_weather.cli diagnostics
-```
-
-## 手动发送天气
-
-先 dry-run 预览：
+预览今日天气，不发送微信：
 
 ```powershell
 python -m wechat_weather.cli send-weather --config .\wechat_weather_config.example.json
@@ -54,31 +49,69 @@ python -m wechat_weather.cli send-weather --config .\wechat_weather_config.examp
 真实发送到默认目标 `湘楠`：
 
 ```powershell
-python -m wechat_weather.cli send-weather --config .\wechat_weather_config.example.json --real --backend pywinauto-session --window-handle 199668
+python -m wechat_weather.cli send-weather --config .\wechat_weather_config.example.json --real --backend pywinauto-session
 ```
 
-## 自动轮询
+启动浏览器控制台：
 
-配置位于 `wechat_weather_config.example.json`：
+```powershell
+python -m wechat_weather.cli serve --config .\wechat_weather_config.example.json --port 8766
+```
+
+执行一次轮询 dry-run，不发送微信：
+
+```powershell
+python -m wechat_weather.cli monitor-check --config .\wechat_weather_config.example.json --dry-run
+```
+
+环境诊断：
+
+```powershell
+python -m wechat_weather.cli diagnostics
+```
+
+## 配置
+
+仓库内保留样例配置 `wechat_weather_config.example.json`。桌面版实际运行建议使用 `%APPDATA%\KangkangWeather\config.json`，避免升级源码时覆盖个人设置。
+
+核心字段：
 
 ```json
 {
+  "contact": "湘楠",
+  "recipients": [
+    {
+      "name": "湘楠",
+      "city_label": "嘉鱼县",
+      "latitude": 29.9724209,
+      "longitude": 113.9335326,
+      "enabled": true
+    }
+  ],
   "monitor": {
     "enabled": true,
     "interval_minutes": 120,
-    "contact": "湘楠",
     "backend": "pywinauto-session",
     "quiet_start": "22:00",
-    "quiet_end": "07:00",
-    "state_path": "weather_poll_state.json"
+    "quiet_end": "07:00"
   }
 }
 ```
 
-第一次轮询只建立基准，不自动发送。之后只有天气风险明显变化时才补发短提醒。
+## 打包 EXE
+
+```powershell
+.\build_exe.ps1
+```
+
+输出文件：
+
+```text
+dist\KangkangWeather-v2.0.0.zip
+```
+
+压缩包内包含 `KangkangWeather.exe`、样例配置和 README。EXE 首次运行同样会创建 `%APPDATA%\KangkangWeather\config.json`。
 
 ## 说明
 
-- 本项目不使用微信协议 Hook，只通过本机 Windows UI 自动化控制已登录的微信客户端。
-- `wxauto` 后端保留为可选能力；默认推荐 `pywinauto-session`。
-- `weather_poll_state.json` 是本地运行状态文件，不应提交到 Git。
+本项目不使用微信协议登录、Hook 或注入，只控制当前电脑上已经登录的 Windows 微信客户端。天气数据使用无 Key 来源，适合个人本机自动化，不适合作为高可靠灾害预警系统。
