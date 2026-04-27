@@ -1,0 +1,20 @@
+{
+  "contact": "湘楠",
+  "weather": {
+    "city_query": "Jiayu County",
+    "city_label": "嘉鱼县",
+    "timeout_seconds": 20,
+    "language": "zh-cn",
+    "latitude": 29.9724209,
+    "longitude": 113.9335326
+  },
+  "monitor": {
+    "enabled": true,
+    "interval_minutes": 120,
+    "contact": "湘楠",
+    "backend": "pywinauto-session",
+    "quiet_start": "22:00",
+    "quiet_end": "07:00",
+    "state_path": "weather_poll_state.json"
+  }
+}

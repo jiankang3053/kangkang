@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+
+# Local runtime state
+weather_poll_state.json
+wechat_weather_server.log
+wechat_weather_server.err.log
+
+# Debug screenshots and local captures
+*.png
+
+# Local WeChat/cache folders
+xwechat_files/
+.playwright-mcp/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
