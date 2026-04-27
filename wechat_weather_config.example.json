@@ -1,19 +1,41 @@
 {
   "app": {
     "name": "KangkangWeather",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "host": "127.0.0.1",
     "port": 8766,
     "open_browser_on_start": true
   },
-  "contact": "湘楠",
-  "recipients": [
+  "locations": [
     {
-      "name": "湘楠",
-      "city_label": "嘉鱼县",
+      "id": "jiayu",
+      "name": "嘉鱼县",
       "latitude": 29.9724209,
       "longitude": 113.9335326,
-      "enabled": true
+      "source": "default",
+      "enabled": true,
+      "default": true
+    }
+  ],
+  "wechat_targets": [
+    {
+      "id": "xiangnan",
+      "name": "湘楠",
+      "enabled": true,
+      "default": true
+    }
+  ],
+  "automation_jobs": [
+    {
+      "id": "default",
+      "location_id": "jiayu",
+      "wechat_target_id": "xiangnan",
+      "enabled": true,
+      "interval_minutes": 120,
+      "fixed_times": [],
+      "quiet_start": "22:00",
+      "quiet_end": "07:00",
+      "allow_quiet_send": false
     }
   ],
   "providers": {
@@ -29,17 +51,17 @@
   },
   "monitor": {
     "enabled": true,
-    "interval_minutes": 120,
     "backend": "pywinauto-session",
-    "quiet_start": "22:00",
-    "quiet_end": "07:00",
     "state_path": "weather_poll_state.json",
     "future_hours": 6,
-    "daily_history_limit": 5
+    "daily_history_limit": 5,
+    "interval_minutes": 120,
+    "quiet_start": "22:00",
+    "quiet_end": "07:00"
   },
   "release": {
     "package_name": "KangkangWeather",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "output_dir": "dist"
   }
 }

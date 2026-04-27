@@ -23,8 +23,9 @@ def _print_result(result) -> int:
 
 def cmd_send_weather(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    recipient = config.recipient_by_name(args.contact or config.contact)
-    weather = recipient.weather_config(
+    location = config.location_by_id(args.location_id)
+    target = config.wechat_target_by_id(args.wechat_target_id or args.contact)
+    weather = location.weather_config(
         timeout_seconds=config.providers.timeout_seconds,
         language=config.providers.language,
     )
@@ -37,7 +38,7 @@ def cmd_send_weather(args: argparse.Namespace) -> int:
         backend=args.backend,
         window_handle=args.window_handle,
     )
-    return _print_result(sender.send(recipient.name, message))
+    return _print_result(sender.send(target.name, message))
 
 
 def cmd_send_text(args: argparse.Namespace) -> int:
@@ -79,6 +80,7 @@ def cmd_monitor_check(args: argparse.Namespace) -> int:
     monitor = WeatherMonitor(config_path=args.config, window_handle=args.window_handle)
     result = monitor.check_once(
         real_send=not args.dry_run,
+        job_id=args.job_id,
         recipient_name=args.recipient,
     )
     print(result)
@@ -108,7 +110,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     weather = subparsers.add_parser("send-weather", help="Build and send a weather forecast.")
     weather.add_argument("--config", help="Path to JSON config.")
-    weather.add_argument("--contact", help="Override the config contact.")
+    weather.add_argument("--location-id", help="Weather location id or name.")
+    weather.add_argument("--wechat-target-id", help="WeChat target id or name.")
+    weather.add_argument("--contact", help="Legacy alias for --wechat-target-id.")
     weather.add_argument(
         "--real",
         action="store_true",
@@ -165,6 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
     monitor_check = subparsers.add_parser("monitor-check", help="Run one monitor check.")
     monitor_check.add_argument("--config")
     monitor_check.add_argument("--window-handle", type=int)
+    monitor_check.add_argument("--job-id", help="Automation job id.")
     monitor_check.add_argument("--recipient", help="Recipient name. Defaults to all enabled recipients.")
     monitor_check.add_argument("--dry-run", action="store_true", help="Do not send WeChat messages.")
     monitor_check.set_defaults(func=cmd_monitor_check)

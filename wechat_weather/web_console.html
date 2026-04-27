@@ -55,10 +55,10 @@
     }
     .side-row span:first-child { color: var(--muted); }
     .topbar {
-      display: flex;
-      justify-content: space-between;
-      align-items: end;
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) auto;
       gap: 18px;
+      align-items: end;
       border-bottom: 1px solid var(--line);
       padding-bottom: 18px;
       margin-bottom: 20px;
@@ -85,6 +85,13 @@
       color: var(--ink);
       padding: 0 10px;
       font: inherit;
+      min-width: 0;
+    }
+    input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      min-width: 18px;
+      padding: 0;
     }
     button {
       height: 38px;
@@ -109,9 +116,10 @@
       color: var(--accent-2);
       font-weight: 700;
     }
+    button.danger { color: var(--bad); }
     .grid {
       display: grid;
-      grid-template-columns: minmax(320px, 1.2fr) minmax(280px, .8fr);
+      grid-template-columns: minmax(320px, 1.15fr) minmax(300px, .85fr);
       gap: 22px;
       align-items: start;
     }
@@ -136,7 +144,7 @@
     }
     pre {
       margin: 0;
-      min-height: 132px;
+      min-height: 120px;
       max-height: 360px;
       overflow: auto;
       padding: 13px;
@@ -168,7 +176,44 @@
     .status.ok { color: var(--accent); }
     .status.bad { color: var(--bad); }
     .status.warn { color: var(--warn); }
-    .history { display: grid; gap: 8px; }
+    .manager-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(280px, 1fr));
+      gap: 22px;
+    }
+    .wide { grid-column: 1 / -1; }
+    .row-list { display: grid; gap: 8px; }
+    .item-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      border-top: 1px solid var(--line);
+      padding-top: 10px;
+      font-size: 13px;
+    }
+    .item-row strong { display: block; line-height: 1.35; }
+    .item-row span { color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .row-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+    .form-line {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(120px, 1fr));
+      gap: 10px;
+      align-items: end;
+    }
+    .check-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 38px;
+      color: var(--ink);
+      font-size: 13px;
+    }
     .event {
       border-top: 1px solid var(--line);
       padding-top: 8px;
@@ -179,14 +224,17 @@
     .event strong { color: var(--ink); }
     @media (max-width: 1180px) {
       .metrics { grid-template-columns: 1fr; }
+      .form-line { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
     }
     @media (max-width: 920px) {
-      .shell, .grid { grid-template-columns: 1fr; }
+      .shell, .grid, .manager-grid, .topbar { grid-template-columns: 1fr; }
       aside { border-right: 0; border-bottom: 1px solid var(--line); }
-      .topbar { align-items: stretch; flex-direction: column; }
       .controls { justify-content: stretch; }
-      label, button { width: 100%; }
-      .metrics { grid-template-columns: 1fr; }
+      label, button, select, input { width: 100%; }
+      .form-line { grid-template-columns: 1fr; }
+      .item-row { grid-template-columns: 1fr; }
+      .row-actions { justify-content: stretch; }
+      .row-actions button { width: auto; flex: 1 1 120px; }
     }
   </style>
 </head>
@@ -196,9 +244,9 @@
       <h1>Kangkang Weather</h1>
       <p class="aside-note">Windows 微信天气提醒桌面版</p>
       <div class="side-list">
-        <div class="side-row"><span>默认目标</span><strong id="defaultRecipient">-</strong></div>
-        <div class="side-row"><span>城市</span><strong id="cityLabel">-</strong></div>
-        <div class="side-row"><span>轮询</span><strong id="interval">-</strong></div>
+        <div class="side-row"><span>默认地址</span><strong id="defaultLocation">-</strong></div>
+        <div class="side-row"><span>默认好友</span><strong id="defaultTarget">-</strong></div>
+        <div class="side-row"><span>默认任务</span><strong id="defaultJob">-</strong></div>
         <div class="side-row"><span>下一次检查</span><strong id="nextCheck">-</strong></div>
         <div class="side-row"><span>数据源</span><strong id="providerCount">-</strong></div>
       </div>
@@ -207,11 +255,14 @@
       <div class="topbar">
         <div>
           <h2>微信天气控制台</h2>
-          <p>后台按两小时轮询，只有实用风险变化才会补发；夜间变化会留到早上汇总。</p>
+          <p>天气地址和微信好友已独立配置，自动化任务负责把二者组合起来。</p>
         </div>
         <div class="controls">
-          <label>目标
-            <select id="recipient"></select>
+          <label>天气地址
+            <select id="locationSelect"></select>
+          </label>
+          <label>微信好友
+            <select id="targetSelect"></select>
           </label>
           <label>后端
             <select id="backend">
@@ -247,31 +298,95 @@
           </section>
           <section>
             <h2>最近轮询</h2>
-            <div id="recentChecks" class="history"></div>
+            <div id="recentChecks" class="row-list"></div>
           </section>
           <section>
             <h2>最近发送</h2>
-            <div id="recentSends" class="history"></div>
-          </section>
-          <section>
-            <h2>环境诊断</h2>
-            <button id="diagnostics">刷新诊断</button>
-            <pre id="diagnosticsOutput"></pre>
+            <div id="recentSends" class="row-list"></div>
           </section>
         </div>
       </div>
+      <section class="wide">
+        <h2>设置</h2>
+        <div class="manager-grid">
+          <div>
+            <h3>地址管理</h3>
+            <div class="form-line">
+              <label>搜索地址
+                <input id="locationQuery" placeholder="例如 嘉鱼县、武汉">
+              </label>
+              <button id="searchLocation">搜索</button>
+              <button id="browserLocation">使用当前位置</button>
+              <button id="ipLocation">IP 定位</button>
+            </div>
+            <div id="locationCandidates" class="row-list"></div>
+            <div id="locationList" class="row-list"></div>
+          </div>
+          <div>
+            <h3>微信好友管理</h3>
+            <div class="form-line">
+              <label>好友或群名称
+                <input id="targetName" placeholder="输入微信左侧会话名">
+              </label>
+              <button id="addTarget">新增好友</button>
+            </div>
+            <div id="targetList" class="row-list"></div>
+          </div>
+          <div class="wide">
+            <h3>自动化任务</h3>
+            <div class="form-line">
+              <label>任务
+                <select id="jobSelect"></select>
+              </label>
+              <label>地址
+                <select id="jobLocation"></select>
+              </label>
+              <label>好友
+                <select id="jobTarget"></select>
+              </label>
+              <label>轮询分钟
+                <input id="jobInterval" type="number" min="1" value="120">
+              </label>
+              <label>固定发送时间
+                <input id="jobFixedTimes" placeholder="07:30,18:00">
+              </label>
+              <label>免打扰开始
+                <input id="jobQuietStart" type="time" value="22:00">
+              </label>
+              <label>免打扰结束
+                <input id="jobQuietEnd" type="time" value="07:00">
+              </label>
+              <label class="check-label">
+                <input id="jobAllowQuiet" type="checkbox">免打扰仍发送
+              </label>
+            </div>
+            <div class="row-actions">
+              <button id="saveJob" class="secondary">保存任务</button>
+              <button id="addJob">新增当前组合任务</button>
+              <button id="deleteJob" class="danger">删除任务</button>
+            </div>
+            <div id="jobList" class="row-list"></div>
+          </div>
+          <div class="wide">
+            <h3>环境诊断</h3>
+            <button id="diagnostics">刷新诊断</button>
+            <pre id="diagnosticsOutput"></pre>
+          </div>
+        </div>
+      </section>
     </main>
   </div>
   <script>
     const el = {
-      recipient: document.querySelector("#recipient"),
+      locationSelect: document.querySelector("#locationSelect"),
+      targetSelect: document.querySelector("#targetSelect"),
       backend: document.querySelector("#backend"),
       message: document.querySelector("#message"),
       status: document.querySelector("#status"),
       result: document.querySelector("#result"),
-      defaultRecipient: document.querySelector("#defaultRecipient"),
-      cityLabel: document.querySelector("#cityLabel"),
-      interval: document.querySelector("#interval"),
+      defaultLocation: document.querySelector("#defaultLocation"),
+      defaultTarget: document.querySelector("#defaultTarget"),
+      defaultJob: document.querySelector("#defaultJob"),
       nextCheck: document.querySelector("#nextCheck"),
       providerCount: document.querySelector("#providerCount"),
       rainRisk: document.querySelector("#rainRisk"),
@@ -280,23 +395,60 @@
       sourceRisk: document.querySelector("#sourceRisk"),
       recentChecks: document.querySelector("#recentChecks"),
       recentSends: document.querySelector("#recentSends"),
+      locationQuery: document.querySelector("#locationQuery"),
+      locationCandidates: document.querySelector("#locationCandidates"),
+      locationList: document.querySelector("#locationList"),
+      targetName: document.querySelector("#targetName"),
+      targetList: document.querySelector("#targetList"),
+      jobSelect: document.querySelector("#jobSelect"),
+      jobLocation: document.querySelector("#jobLocation"),
+      jobTarget: document.querySelector("#jobTarget"),
+      jobInterval: document.querySelector("#jobInterval"),
+      jobFixedTimes: document.querySelector("#jobFixedTimes"),
+      jobQuietStart: document.querySelector("#jobQuietStart"),
+      jobQuietEnd: document.querySelector("#jobQuietEnd"),
+      jobAllowQuiet: document.querySelector("#jobAllowQuiet"),
+      jobList: document.querySelector("#jobList"),
       diagnostics: document.querySelector("#diagnosticsOutput")
     };
     let appState = null;
+    let monitorState = null;
 
     function setStatus(text, kind = "") {
       el.status.textContent = text;
       el.status.className = `status ${kind}`;
     }
+
     async function api(path, options = {}) {
       const response = await fetch(path, { headers: { "Content-Type": "application/json" }, ...options });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || response.statusText);
       return data;
     }
-    function selectedName() {
-      return el.recipient.value || (appState && appState.contact) || "湘楠";
+
+    function selectedLocationId() {
+      return el.locationSelect.value || appState.defaults.location_id;
     }
+
+    function selectedTargetId() {
+      return el.targetSelect.value || appState.defaults.wechat_target_id;
+    }
+
+    function matchingJobId() {
+      const locationId = selectedLocationId();
+      const targetId = selectedTargetId();
+      const job = appState.automation_jobs.find(item => item.location_id === locationId && item.wechat_target_id === targetId);
+      return job ? job.id : appState.defaults.job_id;
+    }
+
+    function option(select, value, text, selected = false) {
+      const item = document.createElement("option");
+      item.value = value;
+      item.textContent = text;
+      item.selected = selected;
+      select.appendChild(item);
+    }
+
     function renderEvents(target, items, emptyText) {
       target.innerHTML = "";
       if (!items || !items.length) {
@@ -308,85 +460,326 @@
         div.className = "event";
         const when = item.checked_at || item.sent_at || "-";
         const bits = [];
+        if (item.type) bits.push(item.type);
         if (item.alerts && item.alerts.length) bits.push(`触发 ${item.alerts.join(", ")}`);
-        if (item.sent) bits.push("已发送");
-        if (item.quiet) bits.push("夜间记录");
+        if (item.sent || item.delivered) bits.push("已发送");
+        if (item.quiet) bits.push("免打扰");
         if (item.dry_run) bits.push("dry-run");
         if (item.source_disagreement) bits.push("数据源分歧");
         div.innerHTML = `<strong>${when}</strong><br>${bits.join(" · ") || "无补发"}`;
         target.appendChild(div);
       }
     }
-    function renderMonitor(data) {
-      const info = data.recipients && data.recipients[selectedName()];
-      el.nextCheck.textContent = data.next_check_at ? data.next_check_at.replace("T", " ") : "-";
-      if (!info) return;
-      const risk = info.current_risk || {};
-      el.cityLabel.textContent = info.city_label || "-";
+
+    function renderMonitor() {
+      if (!monitorState) return;
+      const job = monitorState.jobs && monitorState.jobs[matchingJobId()];
+      el.nextCheck.textContent = monitorState.next_check_at ? monitorState.next_check_at.replace("T", " ") : "-";
+      if (!job) return;
+      const risk = job.current_risk || {};
       el.rainRisk.textContent = risk.future_rain_max == null ? "-" : `${risk.future_rain_max}%`;
       el.weatherRisk.textContent = risk.future_weather || "-";
       el.tempRisk.textContent = risk.today_temp_min == null ? "-" : `${risk.today_temp_min}-${risk.today_temp_max}℃`;
       el.sourceRisk.textContent = risk.source_disagreement ? "有分歧" : (risk.source_count ? `${risk.source_count} 源一致` : "-");
       el.providerCount.textContent = risk.source_count ? `${risk.source_count} 源` : "-";
-      renderEvents(el.recentChecks, info.recent_checks, "还没有轮询记录。");
-      renderEvents(el.recentSends, info.recent_sends, "还没有发送记录。");
+      renderEvents(el.recentChecks, job.recent_checks, "还没有轮询记录。");
+      renderEvents(el.recentSends, job.recent_sends, "还没有发送记录。");
     }
-    async function loadState() {
-      appState = await api("/api/state");
-      el.defaultRecipient.textContent = appState.contact;
-      el.interval.textContent = `${appState.monitor.interval_minutes} 分钟`;
+
+    function renderManagers() {
+      const defaultLocation = appState.locations.find(item => item.id === appState.defaults.location_id);
+      const defaultTarget = appState.wechat_targets.find(item => item.id === appState.defaults.wechat_target_id);
+      el.defaultLocation.textContent = defaultLocation ? defaultLocation.name : "-";
+      el.defaultTarget.textContent = defaultTarget ? defaultTarget.name : "-";
+      el.defaultJob.textContent = appState.defaults.job_id;
       el.backend.value = appState.monitor.backend || "pywinauto-session";
-      el.recipient.innerHTML = "";
-      for (const item of appState.recipients) {
-        const option = document.createElement("option");
-        option.value = item.name;
-        option.textContent = `${item.name} · ${item.city_label}${item.enabled ? "" : "（停用）"}`;
-        option.disabled = !item.enabled;
-        if (item.name === appState.contact) option.selected = true;
-        el.recipient.appendChild(option);
+
+      for (const select of [el.locationSelect, el.jobLocation]) select.innerHTML = "";
+      for (const item of appState.locations) {
+        option(el.locationSelect, item.id, `${item.name}${item.default ? " · 默认" : ""}`, item.id === appState.defaults.location_id);
+        option(el.jobLocation, item.id, item.name, item.id === appState.defaults.location_id);
+      }
+      for (const select of [el.targetSelect, el.jobTarget]) select.innerHTML = "";
+      for (const item of appState.wechat_targets) {
+        option(el.targetSelect, item.id, `${item.name}${item.default ? " · 默认" : ""}`, item.id === appState.defaults.wechat_target_id);
+        option(el.jobTarget, item.id, item.name, item.id === appState.defaults.wechat_target_id);
+      }
+      el.jobSelect.innerHTML = "";
+      for (const job of appState.automation_jobs) {
+        const loc = appState.locations.find(item => item.id === job.location_id);
+        const target = appState.wechat_targets.find(item => item.id === job.wechat_target_id);
+        option(el.jobSelect, job.id, `${loc ? loc.name : job.location_id} -> ${target ? target.name : job.wechat_target_id}`, job.id === appState.defaults.job_id);
+      }
+      renderLocationList();
+      renderTargetList();
+      renderJobEditor();
+      renderJobList();
+    }
+
+    function renderLocationList() {
+      el.locationList.innerHTML = "";
+      for (const item of appState.locations) {
+        const row = document.createElement("div");
+        row.className = "item-row";
+        row.innerHTML = `<div><strong>${item.name}${item.default ? " · 默认" : ""}</strong><span>${item.latitude}, ${item.longitude} · ${item.source}</span></div>`;
+        const actions = document.createElement("div");
+        actions.className = "row-actions";
+        actions.innerHTML = `<button data-action="rename">重命名</button><button data-action="default">设默认</button><button class="danger" data-action="delete">删除</button>`;
+        actions.querySelector('[data-action="rename"]').onclick = () => renameLocation(item);
+        actions.querySelector('[data-action="default"]').onclick = () => patchLocation({ id: item.id, default: true });
+        actions.querySelector('[data-action="delete"]').onclick = () => deleteLocation(item.id);
+        row.appendChild(actions);
+        el.locationList.appendChild(row);
       }
     }
+
+    function renderTargetList() {
+      el.targetList.innerHTML = "";
+      for (const item of appState.wechat_targets) {
+        const row = document.createElement("div");
+        row.className = "item-row";
+        row.innerHTML = `<div><strong>${item.name}${item.default ? " · 默认" : ""}</strong><span>${item.enabled ? "启用" : "停用"}</span></div>`;
+        const actions = document.createElement("div");
+        actions.className = "row-actions";
+        actions.innerHTML = `<button data-action="rename">重命名</button><button data-action="default">设默认</button><button class="danger" data-action="delete">删除</button>`;
+        actions.querySelector('[data-action="rename"]').onclick = () => renameTarget(item);
+        actions.querySelector('[data-action="default"]').onclick = () => patchTarget({ id: item.id, default: true });
+        actions.querySelector('[data-action="delete"]').onclick = () => deleteTarget(item.id);
+        row.appendChild(actions);
+        el.targetList.appendChild(row);
+      }
+    }
+
+    function renderJobEditor() {
+      const job = appState.automation_jobs.find(item => item.id === el.jobSelect.value) || appState.automation_jobs[0];
+      if (!job) return;
+      el.jobSelect.value = job.id;
+      el.jobLocation.value = job.location_id;
+      el.jobTarget.value = job.wechat_target_id;
+      el.jobInterval.value = job.interval_minutes;
+      el.jobFixedTimes.value = (job.fixed_times || []).join(",");
+      el.jobQuietStart.value = job.quiet_start;
+      el.jobQuietEnd.value = job.quiet_end;
+      el.jobAllowQuiet.checked = !!job.allow_quiet_send;
+    }
+
+    function renderJobList() {
+      el.jobList.innerHTML = "";
+      for (const job of appState.automation_jobs) {
+        const loc = appState.locations.find(item => item.id === job.location_id);
+        const target = appState.wechat_targets.find(item => item.id === job.wechat_target_id);
+        const row = document.createElement("div");
+        row.className = "item-row";
+        row.innerHTML = `<div><strong>${loc ? loc.name : job.location_id} -> ${target ? target.name : job.wechat_target_id}</strong><span>${job.interval_minutes} 分钟 · 固定 ${job.fixed_times.length ? job.fixed_times.join(", ") : "未设置"} · ${job.quiet_start}-${job.quiet_end}</span></div>`;
+        const actions = document.createElement("div");
+        actions.className = "row-actions";
+        actions.innerHTML = `<button data-action="select">编辑</button>`;
+        actions.querySelector('[data-action="select"]').onclick = () => {
+          el.jobSelect.value = job.id;
+          renderJobEditor();
+        };
+        row.appendChild(actions);
+        el.jobList.appendChild(row);
+      }
+    }
+
+    async function loadState() {
+      appState = await api("/api/state");
+      renderManagers();
+    }
+
     async function refreshPreview() {
       setStatus("正在刷新天气预览...");
-      const data = await api(`/api/preview?recipient=${encodeURIComponent(selectedName())}`);
+      const data = await api(`/api/preview?location_id=${encodeURIComponent(selectedLocationId())}&wechat_target_id=${encodeURIComponent(selectedTargetId())}`);
       el.message.value = data.message;
       setStatus("预览已更新。", "ok");
     }
+
     async function sendWeather() {
       setStatus("正在发送到微信...");
       const data = await api("/api/send-weather", {
         method: "POST",
-        body: JSON.stringify({ recipient: selectedName(), backend: el.backend.value, real: true })
+        body: JSON.stringify({ location_id: selectedLocationId(), wechat_target_id: selectedTargetId(), backend: el.backend.value, real: true })
       });
       el.result.textContent = JSON.stringify(data, null, 2);
       setStatus(data.ok ? "发送完成。" : "发送失败，查看运行结果。", data.ok ? "ok" : "bad");
       if (data.preview) el.message.value = data.preview;
       await refreshMonitor();
     }
+
     async function refreshMonitor() {
-      const data = await api("/api/monitor/status");
-      renderMonitor(data);
+      monitorState = await api("/api/monitor/status");
+      renderMonitor();
     }
+
     async function checkMonitor() {
       setStatus("正在执行 dry-run 检查...");
       const data = await api("/api/monitor/check", {
         method: "POST",
-        body: JSON.stringify({ dry_run: true, recipient: selectedName() })
+        body: JSON.stringify({ dry_run: true, job_id: matchingJobId() })
       });
       el.result.textContent = JSON.stringify(data, null, 2);
       setStatus("dry-run 检查完成，没有发送微信。", "ok");
       await refreshMonitor();
     }
+
+    async function searchLocation() {
+      const query = el.locationQuery.value.trim();
+      if (!query) return;
+      setStatus("正在搜索地址...");
+      const data = await api(`/api/locations/search?query=${encodeURIComponent(query)}`);
+      el.locationCandidates.innerHTML = "";
+      for (const item of data.results) {
+        const row = document.createElement("div");
+        row.className = "item-row";
+        row.innerHTML = `<div><strong>${item.name}</strong><span>${item.latitude}, ${item.longitude}</span></div>`;
+        const actions = document.createElement("div");
+        actions.className = "row-actions";
+        actions.innerHTML = `<button>保存</button>`;
+        actions.querySelector("button").onclick = () => addLocation(item);
+        row.appendChild(actions);
+        el.locationCandidates.appendChild(row);
+      }
+      setStatus(`找到 ${data.results.length} 个地址候选。`, "ok");
+    }
+
+    async function addLocation(item) {
+      await api("/api/locations", { method: "POST", body: JSON.stringify(item) });
+      await loadState();
+      await refreshPreview();
+      await refreshMonitor();
+      setStatus("地址已保存。", "ok");
+    }
+
+    async function patchLocation(body) {
+      await api("/api/locations", { method: "PATCH", body: JSON.stringify(body) });
+      await loadState();
+      await refreshPreview();
+      await refreshMonitor();
+    }
+
+    async function deleteLocation(id) {
+      await api("/api/locations", { method: "DELETE", body: JSON.stringify({ id }) });
+      await loadState();
+      await refreshPreview();
+      await refreshMonitor();
+    }
+
+    async function renameLocation(item) {
+      const name = window.prompt("地址名称", item.name);
+      if (name) await patchLocation({ id: item.id, name });
+    }
+
+    async function browserLocation() {
+      if (!navigator.geolocation) {
+        await detectIpLocation();
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(async position => {
+        const name = window.prompt("地址名称", "当前位置") || "当前位置";
+        await addLocation({
+          name,
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          source: "browser"
+        });
+      }, async () => {
+        await detectIpLocation();
+      }, { enableHighAccuracy: true, timeout: 10000 });
+    }
+
+    async function detectIpLocation() {
+      setStatus("正在使用 IP 定位...");
+      const data = await api("/api/locations/detect-ip", { method: "POST", body: "{}" });
+      await addLocation(data.location);
+    }
+
+    async function addTarget() {
+      const name = el.targetName.value.trim();
+      if (!name) return;
+      await api("/api/wechat-targets", { method: "POST", body: JSON.stringify({ name }) });
+      el.targetName.value = "";
+      await loadState();
+      await refreshPreview();
+      setStatus("微信好友已保存。", "ok");
+    }
+
+    async function patchTarget(body) {
+      await api("/api/wechat-targets", { method: "PATCH", body: JSON.stringify(body) });
+      await loadState();
+      await refreshPreview();
+      await refreshMonitor();
+    }
+
+    async function deleteTarget(id) {
+      await api("/api/wechat-targets", { method: "DELETE", body: JSON.stringify({ id }) });
+      await loadState();
+      await refreshPreview();
+      await refreshMonitor();
+    }
+
+    async function renameTarget(item) {
+      const name = window.prompt("微信好友或群名称", item.name);
+      if (name) await patchTarget({ id: item.id, name });
+    }
+
+    function jobPayload(includeId = true) {
+      const body = {
+        location_id: el.jobLocation.value,
+        wechat_target_id: el.jobTarget.value,
+        interval_minutes: Number(el.jobInterval.value || 120),
+        fixed_times: el.jobFixedTimes.value,
+        quiet_start: el.jobQuietStart.value || "22:00",
+        quiet_end: el.jobQuietEnd.value || "07:00",
+        allow_quiet_send: el.jobAllowQuiet.checked,
+        enabled: true
+      };
+      if (includeId) body.id = el.jobSelect.value;
+      return body;
+    }
+
+    async function saveJob() {
+      await api("/api/automation/jobs", { method: "PATCH", body: JSON.stringify(jobPayload(true)) });
+      await loadState();
+      await refreshMonitor();
+      setStatus("自动化任务已保存。", "ok");
+    }
+
+    async function addJob() {
+      await api("/api/automation/jobs", { method: "POST", body: JSON.stringify(jobPayload(false)) });
+      await loadState();
+      await refreshMonitor();
+      setStatus("自动化任务已新增。", "ok");
+    }
+
+    async function deleteJob() {
+      await api("/api/automation/jobs", { method: "DELETE", body: JSON.stringify({ id: el.jobSelect.value }) });
+      await loadState();
+      await refreshMonitor();
+      setStatus("自动化任务已删除。", "ok");
+    }
+
     async function refreshDiagnostics() {
       el.diagnostics.textContent = "读取中...";
       const data = await api("/api/diagnostics");
       el.diagnostics.textContent = data.lines.join("\n");
     }
-    document.querySelector("#refresh").addEventListener("click", refreshPreview);
-    document.querySelector("#send").addEventListener("click", sendWeather);
-    document.querySelector("#check").addEventListener("click", checkMonitor);
-    document.querySelector("#diagnostics").addEventListener("click", refreshDiagnostics);
-    el.recipient.addEventListener("change", () => refreshPreview().then(refreshMonitor).catch(error => setStatus(error.message, "bad")));
+
+    document.querySelector("#refresh").addEventListener("click", () => refreshPreview().catch(error => setStatus(error.message, "bad")));
+    document.querySelector("#send").addEventListener("click", () => sendWeather().catch(error => setStatus(error.message, "bad")));
+    document.querySelector("#check").addEventListener("click", () => checkMonitor().catch(error => setStatus(error.message, "bad")));
+    document.querySelector("#searchLocation").addEventListener("click", () => searchLocation().catch(error => setStatus(error.message, "bad")));
+    document.querySelector("#browserLocation").addEventListener("click", () => browserLocation().catch(error => setStatus(error.message, "bad")));
+    document.querySelector("#ipLocation").addEventListener("click", () => detectIpLocation().catch(error => setStatus(error.message, "bad")));
+    document.querySelector("#addTarget").addEventListener("click", () => addTarget().catch(error => setStatus(error.message, "bad")));
+    document.querySelector("#saveJob").addEventListener("click", () => saveJob().catch(error => setStatus(error.message, "bad")));
+    document.querySelector("#addJob").addEventListener("click", () => addJob().catch(error => setStatus(error.message, "bad")));
+    document.querySelector("#deleteJob").addEventListener("click", () => deleteJob().catch(error => setStatus(error.message, "bad")));
+    document.querySelector("#diagnostics").addEventListener("click", () => refreshDiagnostics().catch(error => setStatus(error.message, "bad")));
+    el.locationSelect.addEventListener("change", () => refreshPreview().then(refreshMonitor).catch(error => setStatus(error.message, "bad")));
+    el.targetSelect.addEventListener("change", () => refreshPreview().then(refreshMonitor).catch(error => setStatus(error.message, "bad")));
+    el.jobSelect.addEventListener("change", renderJobEditor);
+
     loadState()
       .then(refreshPreview)
       .then(refreshMonitor)

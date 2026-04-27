@@ -9,11 +9,19 @@ import threading
 import time
 from typing import Any
 
-from .config import AppConfig, RecipientConfig, load_config, user_data_dir
+from .config import (
+    AppConfig,
+    AutomationJobConfig,
+    LocationConfig,
+    WechatTargetConfig,
+    load_config,
+    user_data_dir,
+)
 from .weather import (
     _format_temp,
     _rain_level,
     _weather_code_desc,
+    build_weather_message_from_snapshot,
     build_weather_snapshot,
     weather_code_severity,
 )
@@ -63,6 +71,15 @@ def _today_key(now: datetime) -> str:
 
 def _row_datetime(row: dict[str, Any]) -> datetime:
     return datetime.fromisoformat(str(row["time"]))
+
+
+def _safe_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
 
 
 def _future_rows(
@@ -207,9 +224,8 @@ def evaluate_alerts(
                 key="temp_change_today",
                 title="今日气温变化明显",
                 detail=(
-                    f"今日气温由{previous['today_temp_min']}-"
-                    f"{previous['today_temp_max']}℃调整为"
-                    f"{current['today_temp_min']}-{current['today_temp_max']}℃。"
+                    f"今日气温由{previous['today_temp_min']}-{previous['today_temp_max']}℃"
+                    f"调整为{current['today_temp_min']}-{current['today_temp_max']}℃。"
                 ),
             )
         )
@@ -224,10 +240,7 @@ def evaluate_alerts(
                 Alert(
                     key=f"future_rain_upgrade_{index}",
                     title=f"{label}降雨可能升级",
-                    detail=(
-                        f"{label}降雨可能由{old_day['rain_level']}"
-                        f"升至{new_day['rain_level']}。"
-                    ),
+                    detail=f"{label}降雨可能由{old_day['rain_level']}升至{new_day['rain_level']}。",
                 )
             )
 
@@ -297,7 +310,7 @@ class WeatherMonitor:
             "next_check_at": None,
             "last_result": "尚未检查。",
             "last_send": None,
-            "recipients": {},
+            "jobs": {},
         }
 
     @property
@@ -329,31 +342,52 @@ class WeatherMonitor:
             status = dict(self._last_status)
         config = self.app_config
         state = self._load_state()
-        recipient_state = state.get("recipients", {})
+        job_state = state.get("jobs", {})
+        jobs = {}
+        for job in config.automation_jobs:
+            location = config.location_by_id(job.location_id)
+            target = config.wechat_target_by_id(job.wechat_target_id)
+            state_item = job_state.get(job.id, {})
+            jobs[job.id] = {
+                "id": job.id,
+                "enabled": job.enabled,
+                "location": asdict(location),
+                "wechat_target": asdict(target),
+                "interval_minutes": job.interval_minutes,
+                "fixed_times": job.fixed_times,
+                "quiet_hours": {
+                    "start": job.quiet_start,
+                    "end": job.quiet_end,
+                    "allow_quiet_send": job.allow_quiet_send,
+                },
+                "last_check_at": state_item.get("last_check_at"),
+                "next_interval_at": self._next_interval_time(job, state_item, _now()).isoformat(timespec="seconds"),
+                "last_result": state_item.get("last_result"),
+                "current_risk": _snapshot_summary(
+                    state_item.get("last_snapshot"),
+                    future_hours=config.monitor.future_hours,
+                ),
+                "recent_checks": state_item.get("recent_checks", [])[-5:],
+                "recent_sends": state_item.get("recent_sends", [])[-5:],
+            }
+
         status.update(
             {
                 "contact": config.contact,
                 "backend": config.monitor.backend,
-                "interval_minutes": config.monitor.interval_minutes,
-                "quiet_hours": {
-                    "start": config.monitor.quiet_start,
-                    "end": config.monitor.quiet_end,
-                },
                 "state_path": str(self.state_file),
+                "jobs": jobs,
                 "recipients": {
-                    recipient.name: {
-                        "enabled": recipient.enabled,
-                        "city_label": recipient.city_label,
-                        "last_check_at": recipient_state.get(recipient.name, {}).get("last_check_at"),
-                        "last_result": recipient_state.get(recipient.name, {}).get("last_result"),
-                        "current_risk": _snapshot_summary(
-                            recipient_state.get(recipient.name, {}).get("last_snapshot"),
-                            future_hours=config.monitor.future_hours,
-                        ),
-                        "recent_checks": recipient_state.get(recipient.name, {}).get("recent_checks", [])[-5:],
-                        "recent_sends": recipient_state.get(recipient.name, {}).get("recent_sends", [])[-5:],
+                    item["wechat_target"]["name"]: {
+                        "enabled": item["enabled"],
+                        "city_label": item["location"]["name"],
+                        "last_check_at": item["last_check_at"],
+                        "last_result": item["last_result"],
+                        "current_risk": item["current_risk"],
+                        "recent_checks": item["recent_checks"],
+                        "recent_sends": item["recent_sends"],
                     }
-                    for recipient in config.recipients
+                    for item in jobs.values()
                 },
             }
         )
@@ -362,13 +396,14 @@ class WeatherMonitor:
     def _load_state(self) -> dict[str, Any]:
         path = self.state_file
         if not path.exists():
-            return {"recipients": {}}
+            return {"jobs": {}, "recipients": {}}
         try:
             state = json.loads(path.read_text(encoding="utf-8"))
+            state.setdefault("jobs", {})
             state.setdefault("recipients", {})
             return state
         except Exception:
-            return {"recipients": {}}
+            return {"jobs": {}, "recipients": {}}
 
     def _save_state(self, state: dict[str, Any]) -> None:
         path = self.state_file
@@ -384,27 +419,30 @@ class WeatherMonitor:
 
     def _run_loop(self) -> None:
         while not self._stop.is_set():
-            config = self.app_config
-            now = _now()
-            next_check = now + timedelta(minutes=config.monitor.interval_minutes)
-            self._set_status(next_check_at=next_check.isoformat(timespec="seconds"))
             try:
-                self.check_once(real_send=True, recipient_name=None)
+                result = self.run_due(real_send=True)
+                self._set_status(
+                    enabled=self.app_config.monitor.enabled,
+                    running=self._thread is not None,
+                    last_check_at=result["checked_at"],
+                    next_check_at=result["next_check_at"],
+                    last_result=result["message"],
+                    last_send=result.get("last_send"),
+                )
             except Exception as exc:
                 self._set_status(
                     last_check_at=_now().isoformat(timespec="seconds"),
                     last_result=f"轮询失败：{exc}",
                 )
-            wait_seconds = max(60, config.monitor.interval_minutes * 60)
-            if self._stop.wait(wait_seconds):
+            if self._stop.wait(60):
                 break
 
-    def _recipient_weather_snapshot(
+    def _job_weather_snapshot(
         self,
         config: AppConfig,
-        recipient: RecipientConfig,
+        location: LocationConfig,
     ) -> dict[str, Any]:
-        weather_config = recipient.weather_config(
+        weather_config = location.weather_config(
             timeout_seconds=config.providers.timeout_seconds,
             language=config.providers.language,
         )
@@ -422,27 +460,124 @@ class WeatherMonitor:
     ) -> list[dict[str, Any]]:
         return [*items, item][-limit:]
 
+    def _next_interval_time(
+        self,
+        job: AutomationJobConfig,
+        job_state: dict[str, Any],
+        now: datetime,
+    ) -> datetime:
+        last_check = _safe_datetime(job_state.get("last_check_at"))
+        if last_check is None:
+            return now
+        return last_check + timedelta(minutes=job.interval_minutes)
+
+    def _interval_due(
+        self,
+        job: AutomationJobConfig,
+        job_state: dict[str, Any],
+        now: datetime,
+    ) -> bool:
+        return now >= self._next_interval_time(job, job_state, now)
+
+    def _fixed_due_times(
+        self,
+        job: AutomationJobConfig,
+        job_state: dict[str, Any],
+        now: datetime,
+    ) -> list[str]:
+        sent = set(job_state.get("fixed_sent_keys", []))
+        due = []
+        for fixed in job.fixed_times:
+            fixed_time = _parse_time(fixed)
+            scheduled = datetime.combine(now.date(), fixed_time)
+            seconds = (now - scheduled).total_seconds()
+            key = f"{_today_key(now)}:{fixed}"
+            if 0 <= seconds < 70 and key not in sent:
+                due.append(fixed)
+        return due
+
+    def _next_fixed_time(self, job: AutomationJobConfig, now: datetime) -> datetime | None:
+        if not job.fixed_times:
+            return None
+        candidates = []
+        for fixed in job.fixed_times:
+            fixed_time = _parse_time(fixed)
+            today = datetime.combine(now.date(), fixed_time)
+            candidates.append(today if today >= now else today + timedelta(days=1))
+        return min(candidates)
+
+    def _next_due_at(self, config: AppConfig, state: dict[str, Any], now: datetime) -> str | None:
+        candidates: list[datetime] = []
+        for job in config.automation_jobs:
+            if not job.enabled:
+                continue
+            job_state = state.get("jobs", {}).get(job.id, {})
+            candidates.append(self._next_interval_time(job, job_state, now))
+            fixed_at = self._next_fixed_time(job, now)
+            if fixed_at is not None:
+                candidates.append(fixed_at)
+        if not candidates:
+            return None
+        return min(candidates).isoformat(timespec="seconds")
+
+    def run_due(self, real_send: bool) -> dict[str, Any]:
+        config = self.app_config
+        state = self._load_state()
+        state.setdefault("jobs", {})
+        now = _now()
+        results = []
+        last_send = None
+        for job in config.automation_jobs:
+            if not job.enabled:
+                continue
+            job_state = state["jobs"].setdefault(job.id, {})
+            if self._interval_due(job, job_state, now):
+                result = self._check_job(config, job, state, real_send=real_send)
+                results.append(result)
+                if result.get("send_result"):
+                    last_send = result["send_result"]
+            for fixed in self._fixed_due_times(job, job_state, now):
+                result = self._send_fixed_weather(config, job, fixed, state, real_send=real_send)
+                results.append(result)
+                if result.get("send_result"):
+                    last_send = result["send_result"]
+        self._save_state(state)
+        checked_at = _now().isoformat(timespec="seconds")
+        message = "；".join(result["message"] for result in results) if results else "没有到达执行时间。"
+        return {
+            "ok": all(result.get("ok", False) for result in results) if results else True,
+            "checked_at": checked_at,
+            "next_check_at": self._next_due_at(config, state, _now()),
+            "dry_run": not real_send,
+            "message": message,
+            "last_send": last_send,
+            "results": results,
+        }
+
     def check_once(
         self,
         real_send: bool,
+        job_id: str | None = None,
         recipient_name: str | None = None,
     ) -> dict[str, Any]:
         config = self.app_config
-        recipients = [
-            config.recipient_by_name(recipient_name)
-        ] if recipient_name else [recipient for recipient in config.recipients if recipient.enabled]
+        if job_id:
+            jobs = [config.job_by_id(job_id)]
+        elif recipient_name:
+            jobs = config.jobs_for_target_name(recipient_name)
+        else:
+            jobs = [job for job in config.automation_jobs if job.enabled]
         state = self._load_state()
-        state.setdefault("recipients", {})
-        results = []
-        for recipient in recipients:
-            results.append(self._check_recipient(config, recipient, state, real_send=real_send))
+        state.setdefault("jobs", {})
+        results = [self._check_job(config, job, state, real_send=real_send) for job in jobs]
         self._save_state(state)
         checked_at = _now().isoformat(timespec="seconds")
-        message = "；".join(result["message"] for result in results) if results else "没有启用的目标。"
+        message = "；".join(result["message"] for result in results) if results else "没有启用的自动化任务。"
         self._set_status(
             enabled=config.monitor.enabled,
             running=self._thread is not None,
             last_check_at=checked_at,
+            next_check_at=self._next_due_at(config, state, _now()),
             last_result=message,
             last_send=next((r.get("send_result") for r in results if r.get("send_result")), None),
         )
@@ -453,24 +588,25 @@ class WeatherMonitor:
             "results": results,
         }
 
-    def _check_recipient(
+    def _check_job(
         self,
         config: AppConfig,
-        recipient: RecipientConfig,
+        job: AutomationJobConfig,
         state: dict[str, Any],
         real_send: bool,
     ) -> dict[str, Any]:
-        monitor = config.monitor
+        location = config.location_by_id(job.location_id)
+        target = config.wechat_target_by_id(job.wechat_target_id)
         now = _now()
-        recipient_state = state["recipients"].setdefault(recipient.name, {})
-        previous = recipient_state.get("last_snapshot")
-        current = self._recipient_weather_snapshot(config, recipient)
+        job_state = state["jobs"].setdefault(job.id, {})
+        previous = job_state.get("last_snapshot")
+        current = self._job_weather_snapshot(config, location)
         day_key = _today_key(now)
-        sent_by_day = recipient_state.setdefault("sent_alert_keys", {})
+        sent_by_day = job_state.setdefault("sent_alert_keys", {})
         sent_today = set(sent_by_day.get(day_key, []))
         suppressed_alerts = [
             Alert(**item)
-            for item in recipient_state.get("suppressed_alerts", [])
+            for item in job_state.get("suppressed_alerts", [])
             if isinstance(item, dict) and {"key", "title", "detail"} <= set(item)
         ]
 
@@ -478,13 +614,16 @@ class WeatherMonitor:
             previous,
             current,
             now=now,
-            future_hours=monitor.future_hours,
+            future_hours=config.monitor.future_hours,
         )
         active_alerts = [alert for alert in alerts if alert.key not in sent_today]
-        quiet = _is_quiet(now, monitor.quiet_start, monitor.quiet_end)
+        quiet = _is_quiet(now, job.quiet_start, job.quiet_end)
         result: dict[str, Any] = {
             "ok": True,
-            "recipient": recipient.name,
+            "type": "interval_check",
+            "job_id": job.id,
+            "location": asdict(location),
+            "wechat_target": asdict(target),
             "checked_at": now.isoformat(timespec="seconds"),
             "dry_run": not real_send,
             "baseline_created": previous is None,
@@ -499,10 +638,10 @@ class WeatherMonitor:
         }
 
         if previous is None:
-            result["message"] = f"{recipient.name}：首次轮询只建立天气基准。"
-        elif quiet and active_alerts:
-            recipient_state["suppressed_alerts"] = [asdict(alert) for alert in active_alerts]
-            result["message"] = f"{recipient.name}：夜间免打扰，已记录变化但未发送。"
+            result["message"] = f"{location.name} -> {target.name}：首次轮询只建立天气基准。"
+        elif quiet and active_alerts and not job.allow_quiet_send:
+            job_state["suppressed_alerts"] = [asdict(alert) for alert in active_alerts]
+            result["message"] = f"{location.name} -> {target.name}：夜间免打扰，已记录变化但未发送。"
         else:
             pending_by_key = {
                 alert.key: alert
@@ -519,14 +658,14 @@ class WeatherMonitor:
                     current,
                     suppressed=suppressed_send,
                     now=now,
-                    future_hours=monitor.future_hours,
+                    future_hours=config.monitor.future_hours,
                 )
                 sender = choose_sender(
                     real_send=real_send,
-                    backend=monitor.backend,
+                    backend=config.monitor.backend,
                     window_handle=self.window_handle,
                 )
-                send_result = sender.send(recipient.name, message)
+                send_result = sender.send(target.name, message)
                 result["ok"] = send_result.ok
                 result["sent"] = bool(real_send and send_result.ok)
                 result["send_result"] = asdict(send_result)
@@ -534,35 +673,101 @@ class WeatherMonitor:
                 if send_result.ok:
                     if real_send:
                         sent_today.update(alert.key for alert in pending)
-                        recipient_state["suppressed_alerts"] = []
-                    recipient_state["recent_sends"] = self._append_limited(
-                        recipient_state.get("recent_sends", []),
+                        job_state["suppressed_alerts"] = []
+                    job_state["recent_sends"] = self._append_limited(
+                        job_state.get("recent_sends", []),
                         {
                             "sent_at": result["checked_at"],
+                            "type": "alert",
                             "dry_run": not real_send,
                             "alerts": [alert.key for alert in pending],
                             "ok": send_result.ok,
                             "delivered": bool(real_send and send_result.ok),
                         },
-                        monitor.daily_history_limit,
+                        config.monitor.daily_history_limit,
                     )
             else:
-                result["message"] = f"{recipient.name}：没有达到补发条件。"
+                result["message"] = f"{location.name} -> {target.name}：没有达到补发条件。"
 
-        recipient_state["last_snapshot"] = current
-        recipient_state["last_check_at"] = result["checked_at"]
-        recipient_state["last_result"] = result["message"]
+        job_state["last_snapshot"] = current
+        job_state["last_check_at"] = result["checked_at"]
+        job_state["last_result"] = result["message"]
         sent_by_day[day_key] = sorted(sent_today)
-        recipient_state["recent_checks"] = self._append_limited(
-            recipient_state.get("recent_checks", []),
+        job_state["recent_checks"] = self._append_limited(
+            job_state.get("recent_checks", []),
             {
                 "checked_at": result["checked_at"],
+                "type": result["type"],
                 "alerts": [alert["key"] for alert in result["alerts"]],
                 "sent": result["sent"],
                 "quiet": result["quiet"],
                 "source_count": result["source_count"],
                 "source_disagreement": result["source_disagreement"],
             },
-            monitor.daily_history_limit,
+            config.monitor.daily_history_limit,
         )
+        return result
+
+    def _send_fixed_weather(
+        self,
+        config: AppConfig,
+        job: AutomationJobConfig,
+        fixed_time: str,
+        state: dict[str, Any],
+        real_send: bool,
+    ) -> dict[str, Any]:
+        location = config.location_by_id(job.location_id)
+        target = config.wechat_target_by_id(job.wechat_target_id)
+        now = _now()
+        job_state = state["jobs"].setdefault(job.id, {})
+        key = f"{_today_key(now)}:{fixed_time}"
+        quiet = _is_quiet(now, job.quiet_start, job.quiet_end)
+        fixed_sent_keys = set(job_state.get("fixed_sent_keys", []))
+        result: dict[str, Any] = {
+            "ok": True,
+            "type": "fixed_weather",
+            "job_id": job.id,
+            "location": asdict(location),
+            "wechat_target": asdict(target),
+            "fixed_time": fixed_time,
+            "checked_at": now.isoformat(timespec="seconds"),
+            "dry_run": not real_send,
+            "quiet": quiet,
+            "sent": False,
+            "send_result": None,
+            "message": "",
+        }
+        if quiet and not job.allow_quiet_send:
+            result["message"] = f"{location.name} -> {target.name}：固定发送时间处于免打扰时段，已跳过。"
+            fixed_sent_keys.add(key)
+        else:
+            snapshot = self._job_weather_snapshot(config, location)
+            message = build_weather_message_from_snapshot(snapshot)
+            sender = choose_sender(
+                real_send=real_send,
+                backend=config.monitor.backend,
+                window_handle=self.window_handle,
+            )
+            send_result = sender.send(target.name, message)
+            result["ok"] = send_result.ok
+            result["sent"] = bool(real_send and send_result.ok)
+            result["send_result"] = asdict(send_result)
+            result["message"] = message
+            job_state["last_snapshot"] = snapshot
+            if send_result.ok:
+                fixed_sent_keys.add(key)
+                job_state["recent_sends"] = self._append_limited(
+                    job_state.get("recent_sends", []),
+                    {
+                        "sent_at": result["checked_at"],
+                        "type": "fixed_weather",
+                        "fixed_time": fixed_time,
+                        "dry_run": not real_send,
+                        "ok": send_result.ok,
+                        "delivered": bool(real_send and send_result.ok),
+                    },
+                    config.monitor.daily_history_limit,
+                )
+        job_state["fixed_sent_keys"] = sorted(fixed_sent_keys)
+        job_state["last_result"] = result["message"]
         return result

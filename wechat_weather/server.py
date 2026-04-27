@@ -6,10 +6,13 @@ from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+import re
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from .config import load_config
+import requests
+
+from .config import load_config, read_config_data, write_config_data, normalize_fixed_times
 from .monitor import WeatherMonitor
 from .weather import build_weather_message
 from .wechat import choose_sender, collect_diagnostics
@@ -343,6 +346,35 @@ def _index_html() -> str:
         return INDEX_HTML
 
 
+def _make_id(prefix: str, value: Any, existing: set[str]) -> str:
+    text = re.sub(r"[^a-z0-9]+", "-", str(value or "").lower()).strip("-")
+    base = f"{prefix}-{text}" if text else prefix
+    candidate = base
+    index = 2
+    while candidate in existing:
+        candidate = f"{base}-{index}"
+        index += 1
+    return candidate
+
+
+def _bool_value(data: dict[str, Any], key: str, default: bool = False) -> bool:
+    if key not in data:
+        return default
+    value = data[key]
+    if isinstance(value, str):
+        return value.lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _display_location(item: dict[str, Any]) -> str:
+    parts = [
+        item.get("name"),
+        item.get("admin1"),
+        item.get("country"),
+    ]
+    return " · ".join(str(part) for part in parts if part)
+
+
 class WeatherServer(ThreadingHTTPServer):
     def __init__(
         self,
@@ -359,6 +391,12 @@ class WeatherServer(ThreadingHTTPServer):
     @property
     def app_config(self):
         return load_config(self.config_path, create_user_config=self.config_path is None)
+
+    def read_config_data(self) -> dict[str, Any]:
+        return read_config_data(self.config_path, create_user_config=self.config_path is None)
+
+    def write_config_data(self, data: dict[str, Any]) -> None:
+        write_config_data(self.config_path, data)
 
 
 class WeatherRequestHandler(BaseHTTPRequestHandler):
@@ -389,6 +427,171 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length).decode("utf-8")
         return json.loads(raw)
 
+    def _load_config_data_for_write(self) -> dict[str, Any]:
+        return self.server.read_config_data()
+
+    def _save_config_data(self, data: dict[str, Any]) -> None:
+        self.server.write_config_data(data)
+
+    def _set_default(self, items: list[dict[str, Any]], item_id: str) -> None:
+        for item in items:
+            item["default"] = item.get("id") == item_id
+
+    def _upsert_location(self, body: dict[str, Any], item_id: str | None = None) -> dict[str, Any]:
+        data = self._load_config_data_for_write()
+        locations = data.setdefault("locations", [])
+        existing_ids = {str(item.get("id")) for item in locations}
+        if item_id is None:
+            item_id = str(body.get("id") or _make_id("loc", body.get("name"), existing_ids))
+            item = {"id": item_id}
+            locations.append(item)
+        else:
+            item = next((entry for entry in locations if entry.get("id") == item_id), None)
+            if item is None:
+                raise KeyError(f"没有找到天气地址：{item_id}")
+        if "name" in body:
+            item["name"] = str(body["name"]).strip()
+        if "latitude" in body:
+            item["latitude"] = float(body["latitude"])
+        if "longitude" in body:
+            item["longitude"] = float(body["longitude"])
+        if "source" in body:
+            item["source"] = str(body["source"])
+        if "enabled" in body:
+            item["enabled"] = _bool_value(body, "enabled", True)
+        else:
+            item.setdefault("enabled", True)
+        item.setdefault("name", "未命名地址")
+        item.setdefault("latitude", 0.0)
+        item.setdefault("longitude", 0.0)
+        item.setdefault("source", "manual")
+        item.setdefault("default", False)
+        if _bool_value(body, "default", False) or len(locations) == 1:
+            self._set_default(locations, item_id)
+        self._save_config_data(data)
+        return item
+
+    def _delete_location(self, item_id: str) -> dict[str, Any]:
+        data = self._load_config_data_for_write()
+        locations = data.setdefault("locations", [])
+        if len(locations) <= 1:
+            raise ValueError("至少需要保留一个天气地址。")
+        removed = next((item for item in locations if item.get("id") == item_id), None)
+        if removed is None:
+            raise KeyError(f"没有找到天气地址：{item_id}")
+        data["locations"] = [item for item in locations if item.get("id") != item_id]
+        if not any(item.get("default") for item in data["locations"]):
+            data["locations"][0]["default"] = True
+        default_location = next(item["id"] for item in data["locations"] if item.get("default"))
+        for job in data.get("automation_jobs", []):
+            if job.get("location_id") == item_id:
+                job["location_id"] = default_location
+        self._save_config_data(data)
+        return removed
+
+    def _upsert_target(self, body: dict[str, Any], item_id: str | None = None) -> dict[str, Any]:
+        data = self._load_config_data_for_write()
+        targets = data.setdefault("wechat_targets", [])
+        existing_ids = {str(item.get("id")) for item in targets}
+        if item_id is None:
+            item_id = str(body.get("id") or _make_id("target", body.get("name"), existing_ids))
+            item = {"id": item_id}
+            targets.append(item)
+        else:
+            item = next((entry for entry in targets if entry.get("id") == item_id), None)
+            if item is None:
+                raise KeyError(f"没有找到微信好友：{item_id}")
+        if "name" in body:
+            item["name"] = str(body["name"]).strip()
+        if "enabled" in body:
+            item["enabled"] = _bool_value(body, "enabled", True)
+        else:
+            item.setdefault("enabled", True)
+        item.setdefault("name", "未命名好友")
+        item.setdefault("default", False)
+        if _bool_value(body, "default", False) or len(targets) == 1:
+            self._set_default(targets, item_id)
+        self._save_config_data(data)
+        return item
+
+    def _delete_target(self, item_id: str) -> dict[str, Any]:
+        data = self._load_config_data_for_write()
+        targets = data.setdefault("wechat_targets", [])
+        if len(targets) <= 1:
+            raise ValueError("至少需要保留一个微信好友。")
+        removed = next((item for item in targets if item.get("id") == item_id), None)
+        if removed is None:
+            raise KeyError(f"没有找到微信好友：{item_id}")
+        data["wechat_targets"] = [item for item in targets if item.get("id") != item_id]
+        if not any(item.get("default") for item in data["wechat_targets"]):
+            data["wechat_targets"][0]["default"] = True
+        default_target = next(item["id"] for item in data["wechat_targets"] if item.get("default"))
+        for job in data.get("automation_jobs", []):
+            if job.get("wechat_target_id") == item_id:
+                job["wechat_target_id"] = default_target
+        self._save_config_data(data)
+        return removed
+
+    def _upsert_job(self, body: dict[str, Any], item_id: str | None = None) -> dict[str, Any]:
+        data = self._load_config_data_for_write()
+        jobs = data.setdefault("automation_jobs", [])
+        existing_ids = {str(item.get("id")) for item in jobs}
+        if item_id is None:
+            item_id = str(body.get("id") or _make_id("job", len(jobs) + 1, existing_ids))
+            item = {"id": item_id}
+            jobs.append(item)
+        else:
+            item = next((entry for entry in jobs if entry.get("id") == item_id), None)
+            if item is None:
+                raise KeyError(f"没有找到自动化任务：{item_id}")
+        config = self.server.app_config
+        if "location_id" in body:
+            config.location_by_id(str(body["location_id"]))
+            item["location_id"] = str(body["location_id"])
+        if "wechat_target_id" in body:
+            config.wechat_target_by_id(str(body["wechat_target_id"]))
+            item["wechat_target_id"] = str(body["wechat_target_id"])
+        item.setdefault("location_id", config.default_location.id)
+        item.setdefault("wechat_target_id", config.default_wechat_target.id)
+        if "enabled" in body:
+            item["enabled"] = _bool_value(body, "enabled", True)
+        else:
+            item.setdefault("enabled", True)
+        if "interval_minutes" in body:
+            item["interval_minutes"] = max(1, int(body["interval_minutes"]))
+        else:
+            item.setdefault("interval_minutes", config.monitor.interval_minutes)
+        if "fixed_times" in body:
+            item["fixed_times"] = normalize_fixed_times(body["fixed_times"])
+        else:
+            item.setdefault("fixed_times", [])
+        if "quiet_start" in body:
+            item["quiet_start"] = str(body["quiet_start"])
+        else:
+            item.setdefault("quiet_start", config.monitor.quiet_start)
+        if "quiet_end" in body:
+            item["quiet_end"] = str(body["quiet_end"])
+        else:
+            item.setdefault("quiet_end", config.monitor.quiet_end)
+        if "allow_quiet_send" in body:
+            item["allow_quiet_send"] = _bool_value(body, "allow_quiet_send", False)
+        else:
+            item.setdefault("allow_quiet_send", False)
+        self._save_config_data(data)
+        return item
+
+    def _delete_job(self, item_id: str) -> dict[str, Any]:
+        data = self._load_config_data_for_write()
+        jobs = data.setdefault("automation_jobs", [])
+        if len(jobs) <= 1:
+            raise ValueError("至少需要保留一个自动化任务。")
+        removed = next((item for item in jobs if item.get("id") == item_id), None)
+        if removed is None:
+            raise KeyError(f"没有找到自动化任务：{item_id}")
+        data["automation_jobs"] = [item for item in jobs if item.get("id") != item_id]
+        self._save_config_data(data)
+        return removed
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         try:
@@ -403,24 +606,93 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
                     {
                         "app": asdict(config.app),
                         "contact": config.contact,
+                        "locations": [asdict(item) for item in config.locations],
+                        "wechat_targets": [asdict(item) for item in config.wechat_targets],
+                        "automation_jobs": [asdict(item) for item in config.automation_jobs],
                         "recipients": [asdict(item) for item in config.recipients],
+                        "defaults": {
+                            "location_id": config.default_location.id,
+                            "wechat_target_id": config.default_wechat_target.id,
+                            "job_id": config.default_job.id,
+                        },
                         "providers": asdict(config.providers),
                         "monitor": asdict(config.monitor),
                         "release": asdict(config.release),
                     },
                 )
+            elif parsed.path == "/api/locations/search":
+                query = (parse_qs(parsed.query).get("query") or [""])[0].strip()
+                if not query:
+                    self._send_json(400, {"error": "query is required"})
+                    return
+                results = []
+                failures = []
+                try:
+                    response = requests.get(
+                        "https://geocoding-api.open-meteo.com/v1/search",
+                        params={
+                            "name": query,
+                            "count": 8,
+                            "language": "zh",
+                            "format": "json",
+                        },
+                        timeout=12,
+                    )
+                    response.raise_for_status()
+                    for item in response.json().get("results", []):
+                        name = _display_location(item)
+                        results.append(
+                            {
+                                "name": name,
+                                "latitude": item.get("latitude"),
+                                "longitude": item.get("longitude"),
+                                "source": "open_meteo_geocoding",
+                                "country": item.get("country"),
+                                "admin1": item.get("admin1"),
+                            }
+                        )
+                except Exception as exc:
+                    failures.append(f"open_meteo_geocoding: {exc}")
+                if not results:
+                    response = requests.get(
+                        "https://nominatim.openstreetmap.org/search",
+                        params={
+                            "q": query,
+                            "format": "jsonv2",
+                            "limit": 8,
+                            "accept-language": "zh-CN",
+                        },
+                        headers={"User-Agent": "KangkangWeather/2.1"},
+                        timeout=12,
+                    )
+                    response.raise_for_status()
+                    for item in response.json():
+                        results.append(
+                            {
+                                "name": item.get("display_name") or query,
+                                "latitude": float(item.get("lat")),
+                                "longitude": float(item.get("lon")),
+                                "source": "nominatim",
+                            }
+                        )
+                self._send_json(200, {"results": results, "failures": failures})
             elif parsed.path == "/api/preview":
                 config = self.server.app_config
                 query = parse_qs(parsed.query)
-                recipient = config.recipient_by_name((query.get("recipient") or [None])[0])
-                weather = recipient.weather_config(
+                location = config.location_by_id((query.get("location_id") or [None])[0])
+                target = config.wechat_target_by_id(
+                    (query.get("wechat_target_id") or query.get("recipient") or query.get("contact") or [None])[0]
+                )
+                weather = location.weather_config(
                     timeout_seconds=config.providers.timeout_seconds,
                     language=config.providers.language,
                 )
                 self._send_json(
                     200,
                     {
-                        "contact": recipient.name,
+                        "location": asdict(location),
+                        "wechat_target": asdict(target),
+                        "contact": target.name,
                         "message": build_weather_message(
                             weather,
                             comparison_models=config.providers.comparison_models,
@@ -440,10 +712,49 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         try:
             body = self._read_json()
+            if parsed.path == "/api/locations/detect-ip":
+                response = requests.get("https://ipapi.co/json/", timeout=12)
+                response.raise_for_status()
+                data = response.json()
+                latitude = data.get("latitude")
+                longitude = data.get("longitude")
+                if latitude is None or longitude is None:
+                    raise RuntimeError("IP 定位没有返回经纬度。")
+                name = " · ".join(
+                    str(part)
+                    for part in [data.get("city"), data.get("region"), data.get("country_name")]
+                    if part
+                )
+                self._send_json(
+                    200,
+                    {
+                        "location": {
+                            "name": name or "IP 定位地址",
+                            "latitude": latitude,
+                            "longitude": longitude,
+                            "source": "ip",
+                        }
+                    },
+                )
+                return
+
+            if parsed.path == "/api/locations":
+                self._send_json(200, {"location": self._upsert_location(body)})
+                return
+
+            if parsed.path == "/api/wechat-targets":
+                self._send_json(200, {"wechat_target": self._upsert_target(body)})
+                return
+
+            if parsed.path == "/api/automation/jobs":
+                self._send_json(200, {"automation_job": self._upsert_job(body)})
+                return
+
             if parsed.path == "/api/monitor/check":
                 real_send = bool(body.get("real", False)) and not bool(body.get("dry_run", False))
                 result = self.server.monitor.check_once(
                     real_send=real_send,
+                    job_id=body.get("job_id"),
                     recipient_name=body.get("recipient"),
                 )
                 self._send_json(200, result)
@@ -454,12 +765,13 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
                 return
 
             config = self.server.app_config
-            recipient = config.recipient_by_name(
-                str(body.get("recipient") or body.get("contact") or config.contact)
+            location = config.location_by_id(body.get("location_id"))
+            target = config.wechat_target_by_id(
+                str(body.get("wechat_target_id") or body.get("recipient") or body.get("contact") or config.contact)
             )
             backend = str(body.get("backend") or "pywinauto-session")
             real = bool(body.get("real", False))
-            weather = recipient.weather_config(
+            weather = location.weather_config(
                 timeout_seconds=config.providers.timeout_seconds,
                 language=config.providers.language,
             )
@@ -472,9 +784,43 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
                 backend=backend,
                 window_handle=self.server.window_handle,
             )
-            result = sender.send(recipient.name, message)
+            result = sender.send(target.name, message)
             payload = asdict(result)
             self._send_json(200 if result.ok else 409, payload)
+        except Exception as exc:
+            self._send_json(500, {"error": str(exc)})
+
+    def do_PATCH(self) -> None:
+        parsed = urlparse(self.path)
+        try:
+            body = self._read_json()
+            if parsed.path == "/api/locations":
+                item_id = str(body.get("id") or "")
+                self._send_json(200, {"location": self._upsert_location(body, item_id=item_id)})
+            elif parsed.path == "/api/wechat-targets":
+                item_id = str(body.get("id") or "")
+                self._send_json(200, {"wechat_target": self._upsert_target(body, item_id=item_id)})
+            elif parsed.path == "/api/automation/jobs":
+                item_id = str(body.get("id") or "")
+                self._send_json(200, {"automation_job": self._upsert_job(body, item_id=item_id)})
+            else:
+                self._send_json(404, {"error": "not found"})
+        except Exception as exc:
+            self._send_json(500, {"error": str(exc)})
+
+    def do_DELETE(self) -> None:
+        parsed = urlparse(self.path)
+        try:
+            body = self._read_json()
+            item_id = str(body.get("id") or "")
+            if parsed.path == "/api/locations":
+                self._send_json(200, {"deleted": self._delete_location(item_id)})
+            elif parsed.path == "/api/wechat-targets":
+                self._send_json(200, {"deleted": self._delete_target(item_id)})
+            elif parsed.path == "/api/automation/jobs":
+                self._send_json(200, {"deleted": self._delete_job(item_id)})
+            else:
+                self._send_json(404, {"error": "not found"})
         except Exception as exc:
             self._send_json(500, {"error": str(exc)})
 
