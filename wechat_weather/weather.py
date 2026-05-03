@@ -1,8 +1,12 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
+import json
+import os
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
@@ -13,7 +17,7 @@ import requests
 class WeatherConfig:
     city_query: str = "Jiayu County"
     city_label: str = "嘉鱼县"
-    timeout_seconds: float = 20.0
+    timeout_seconds: float = 8.0
     language: str = "zh-cn"
     latitude: float = 29.9724209
     longitude: float = 113.9335326
@@ -52,6 +56,9 @@ class WeatherSnapshot:
     provider_failures: list[str] = field(default_factory=list)
     source_disagreement: bool = False
     source_count: int = 1
+    cached: bool = False
+    stale: bool = False
+    elapsed_ms: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -178,6 +185,135 @@ def fetch_open_meteo_weather(
     )
     response.raise_for_status()
     return response.json()
+
+
+def weather_cache_path() -> Path:
+    root = os.environ.get("APPDATA")
+    if root:
+        return Path(root) / "KangkangWeather" / "weather_cache.json"
+    return Path.home() / ".KangkangWeather" / "weather_cache.json"
+
+
+def weather_history_path() -> Path:
+    root = os.environ.get("APPDATA")
+    if root:
+        return Path(root) / "KangkangWeather" / "weather_fetch_history.json"
+    return Path.home() / ".KangkangWeather" / "weather_fetch_history.json"
+
+
+def _append_weather_history(record: dict[str, Any], limit: int = 200) -> None:
+    path = weather_history_path()
+    try:
+        if path.exists():
+            current = json.loads(path.read_text(encoding="utf-8"))
+            history = current if isinstance(current, list) else []
+        else:
+            history = []
+        history.append(record)
+        history = history[-limit:]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(history, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except Exception:
+        # Weather history must never break preview, sending, or monitoring.
+        return
+
+
+def read_weather_history(limit: int = 50) -> list[dict[str, Any]]:
+    path = weather_history_path()
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        history = data if isinstance(data, list) else []
+    except Exception:
+        return []
+    return list(reversed(history[-max(1, int(limit)) :]))
+
+
+def _history_record(
+    config: WeatherConfig,
+    *,
+    started: datetime,
+    snapshot: dict[str, Any] | None = None,
+    ok: bool,
+    error: str = "",
+) -> dict[str, Any]:
+    elapsed_ms = int((datetime.now() - started).total_seconds() * 1000)
+    snapshot = snapshot or {}
+    cached = bool(snapshot.get("cached"))
+    return {
+        "fetched_at": datetime.now().isoformat(timespec="seconds"),
+        "address": config.city_label,
+        "source": snapshot.get("source"),
+        "sources": snapshot.get("sources", []),
+        "source_count": snapshot.get("source_count", len(snapshot.get("sources", [])) if snapshot else 0),
+        "failures": snapshot.get("provider_failures", []),
+        "cached": cached,
+        "stale": bool(snapshot.get("stale")),
+        "source_disagreement": bool(snapshot.get("source_disagreement")),
+        "elapsed_ms": snapshot.get("elapsed_ms") or elapsed_ms,
+        "status": "ok" if ok and not cached else ("cache" if ok else "failed"),
+        "error": error,
+    }
+
+
+def _cache_key(config: WeatherConfig) -> str:
+    return f"{config.city_label}|{round(float(config.latitude), 5)}|{round(float(config.longitude), 5)}"
+
+
+def _read_weather_cache() -> dict[str, Any]:
+    path = weather_cache_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_weather_cache(data: dict[str, Any]) -> None:
+    path = weather_cache_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _load_cached_snapshot(config: WeatherConfig, max_age_hours: int = 12) -> dict[str, Any] | None:
+    item = _read_weather_cache().get(_cache_key(config))
+    if not isinstance(item, dict):
+        return None
+    snapshot = item.get("snapshot")
+    cached_at = item.get("cached_at")
+    if not isinstance(snapshot, dict) or not cached_at:
+        return None
+    try:
+        age = datetime.now() - datetime.fromisoformat(str(cached_at))
+    except ValueError:
+        return None
+    if age > timedelta(hours=max_age_hours):
+        return None
+    result = dict(snapshot)
+    result["cached"] = True
+    result["stale"] = True
+    result["cache_age_minutes"] = int(age.total_seconds() // 60)
+    return result
+
+
+def _save_cached_snapshot(config: WeatherConfig, snapshot: dict[str, Any]) -> None:
+    if snapshot.get("stale"):
+        return
+    data = _read_weather_cache()
+    clean = dict(snapshot)
+    clean["cached"] = False
+    clean["stale"] = False
+    data[_cache_key(config)] = {
+        "cached_at": datetime.now().isoformat(timespec="seconds"),
+        "snapshot": clean,
+    }
+    _write_weather_cache(data)
 
 
 def _snapshot_from_open_meteo_data(
@@ -314,6 +450,9 @@ def merge_snapshots(
         "source_count": len(set(sources)),
         "provider_failures": failures or [],
         "source_disagreement": _has_disagreement(snapshots),
+        "cached": False,
+        "stale": False,
+        "elapsed_ms": None,
         "days": merged_days,
     }
 
@@ -323,21 +462,40 @@ def build_weather_snapshot(
     comparison_models: list[str] | None = None,
     fallback_wttr: bool = True,
 ) -> dict[str, Any]:
+    started = datetime.now()
     models = ["best_match", *(comparison_models or [])]
     snapshots: list[dict[str, Any]] = []
     failures: list[str] = []
     seen: set[str] = set()
+    unique_models: list[str] = []
 
     for model in models:
         if model in seen:
             continue
         seen.add(model)
-        source_name = f"open_meteo:{model}"
-        try:
-            data = fetch_open_meteo_weather(config, model=model)
-            snapshots.append(_snapshot_from_open_meteo_data(config, data, source_name))
-        except Exception as exc:
-            failures.append(f"{source_name}: {exc}")
+        unique_models.append(model)
+
+    executor = ThreadPoolExecutor(max_workers=min(len(unique_models), 4) or 1)
+    futures = {
+        executor.submit(fetch_open_meteo_weather, config, model): model
+        for model in unique_models
+    }
+    try:
+        for future in as_completed(futures, timeout=15):
+            model = futures[future]
+            source_name = f"open_meteo:{model}"
+            try:
+                data = future.result()
+                snapshots.append(_snapshot_from_open_meteo_data(config, data, source_name))
+            except Exception as exc:
+                failures.append(f"{source_name}: {exc}")
+    except FuturesTimeoutError:
+        for future, model in futures.items():
+            if not future.done():
+                failures.append(f"open_meteo:{model}: timed out")
+                future.cancel()
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
     if not snapshots and fallback_wttr:
         try:
@@ -345,7 +503,45 @@ def build_weather_snapshot(
         except Exception as exc:
             failures.append(f"wttr.in: {exc}")
 
-    return merge_snapshots(config, snapshots, failures=failures)
+    if snapshots:
+        snapshot = merge_snapshots(config, snapshots, failures=failures)
+        snapshot["elapsed_ms"] = int((datetime.now() - started).total_seconds() * 1000)
+        _save_cached_snapshot(config, snapshot)
+        _append_weather_history(_history_record(config, started=started, snapshot=snapshot, ok=True))
+        return snapshot
+
+    cached = _load_cached_snapshot(config)
+    if cached:
+        cached["provider_failures"] = failures
+        cached["elapsed_ms"] = int((datetime.now() - started).total_seconds() * 1000)
+        _append_weather_history(_history_record(config, started=started, snapshot=cached, ok=True))
+        return cached
+
+    error = "没有可用天气数据源：" + "；".join(failures)
+    _append_weather_history(
+        _history_record(
+            config,
+            started=started,
+            snapshot={"provider_failures": failures, "elapsed_ms": int((datetime.now() - started).total_seconds() * 1000)},
+            ok=False,
+            error=error,
+        )
+    )
+    raise ValueError(error)
+
+
+def weather_status_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "source": snapshot.get("source"),
+        "source_count": snapshot.get("source_count", len(snapshot.get("sources", []))),
+        "sources": snapshot.get("sources", []),
+        "failures": snapshot.get("provider_failures", []),
+        "source_disagreement": bool(snapshot.get("source_disagreement")),
+        "cached": bool(snapshot.get("cached")),
+        "stale": bool(snapshot.get("stale")),
+        "cache_age_minutes": snapshot.get("cache_age_minutes"),
+        "elapsed_ms": snapshot.get("elapsed_ms"),
+    }
 
 
 def _period_forecast(day: dict[str, Any], start_hour: int, end_hour: int) -> tuple[str, int]:
@@ -376,11 +572,15 @@ def _open_meteo_advice(today: dict[str, Any]) -> str:
     return "早晚添衣"
 
 
-def build_weather_message_from_snapshot(snapshot: dict[str, Any]) -> str:
+def build_weather_message_from_snapshot(
+    snapshot: dict[str, Any],
+    daily_prefix: str = "",
+    daily_style: str = "segmented_brief",
+) -> str:
     days = snapshot.get("days", [])
-    if len(days) < 4:
-        raise ValueError("天气快照的预报天数不足 4 天。")
-    today, tomorrow, after_tomorrow, third_day = days[:4]
+    if len(days) < 3:
+        raise ValueError("天气快照的预报天数不足 3 天。")
+    today, tomorrow, after_tomorrow = days[:3]
     periods = [
         (0, 3),
         (3, 6),
@@ -394,51 +594,56 @@ def build_weather_message_from_snapshot(snapshot: dict[str, Any]) -> str:
     period_lines = []
     for index, (start, end) in enumerate(periods):
         weather, rain = _period_forecast(today, start, end)
-        punctuation = "。" if index == len(periods) - 1 else "；"
         period_lines.append(
-            f"{start:02d}:00-{end:02d}:00{weather}，降雨概率{rain}%{punctuation}"
+            f"{start:02d}:00-{end:02d}:00 {weather}，降雨概率{rain}%"
         )
 
     def day_line(label: str, day: dict[str, Any]) -> str:
         return (
             f"{label}：{_weather_code_desc(day['code'])}，"
-            f"气温{_format_temp(day['temp_min'])}-{_format_temp(day['temp_max'])}℃，"
+            f"{_format_temp(day['temp_min'])}-{_format_temp(day['temp_max'])}℃，"
             f"降雨可能{_rain_level(day['rain_max'])}。"
         )
 
     source_note = ""
     if snapshot.get("source_disagreement"):
         source_note = "\n\n提示：多源预报存在分歧，已按偏高风险提醒。"
+    if snapshot.get("stale"):
+        source_note += "\n\n提示：天气接口暂时不可用，已使用最近一次成功预报。"
 
-    return "\n".join(
-        [
-            "【天气预报】",
-            "",
-            "今日：",
-            *period_lines,
-            "",
-            (
-                f"今日气温{_format_temp(today['temp_min'])}-"
-                f"{_format_temp(today['temp_max'])}℃，"
-                f"建议{_open_meteo_advice(today)}。"
-            ),
-            "",
-            day_line("明天", tomorrow),
-            day_line("后天", after_tomorrow),
-            day_line("大后天", third_day),
-        ]
-    ) + source_note
+    lines = [
+        f"【{snapshot.get('city_label') or '天气'}天气提醒】",
+        "",
+        "今日分时段：",
+        *period_lines,
+        "",
+        f"今日气温：{_format_temp(today['temp_min'])}-{_format_temp(today['temp_max'])}℃。",
+        f"建议：{_open_meteo_advice(today)}。",
+        "",
+        day_line("明天", tomorrow),
+        day_line("后天", after_tomorrow),
+    ]
+    prefix = str(daily_prefix or "").strip()
+    if prefix:
+        lines = [prefix, "", *lines]
+    return "\n".join(lines) + source_note
 
 
 def build_weather_message(
     config: WeatherConfig,
     comparison_models: list[str] | None = None,
+    daily_prefix: str = "",
+    daily_style: str = "segmented_brief",
 ) -> str:
     try:
         snapshot = build_weather_snapshot(config, comparison_models=comparison_models)
-        return build_weather_message_from_snapshot(snapshot)
-    except Exception:
-        return _build_wttr_message(config)
+        return build_weather_message_from_snapshot(
+            snapshot,
+            daily_prefix=daily_prefix,
+            daily_style=daily_style,
+        )
+    except Exception as exc:
+        return f"天气加载失败：{exc}"
 
 
 def _weather_desc(block: dict[str, Any]) -> str:

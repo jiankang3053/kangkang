@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 import socket
 import subprocess
@@ -12,7 +13,7 @@ from typing import Any, Callable
 from urllib import request
 import webbrowser
 
-from .config import APP_NAME, load_config
+from .config import APP_NAME, APP_VERSION, load_config, user_data_dir
 from .server import WeatherServer
 
 
@@ -73,6 +74,22 @@ def _port_open(host: str, port: int) -> bool:
         return False
 
 
+def _configure_logging() -> None:
+    log_dir = user_data_dir() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        filename=log_dir / "app.log",
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        encoding="utf-8",
+    )
+
+
+def _get_json(url: str) -> dict[str, Any]:
+    with request.urlopen(url, timeout=2) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
 def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
     data = json.dumps(payload).encode("utf-8")
     req = request.Request(
@@ -83,6 +100,24 @@ def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
     )
     with request.urlopen(req, timeout=120) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def _is_existing_kangkang(url: str) -> bool:
+    try:
+        data = _get_json(f"{url}api/state")
+        app = data.get("app", {})
+        return app.get("name") == APP_NAME and app.get("version") == APP_VERSION
+    except Exception:
+        return False
+
+
+def _find_free_port(host: str, preferred: int) -> int:
+    for port in range(preferred + 1, preferred + 80):
+        if not _port_open(host, port):
+            return port
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind((host, 0))
+        return int(sock.getsockname()[1])
 
 
 class TrayRuntime:
@@ -99,7 +134,13 @@ class TrayRuntime:
 
     def start_server(self) -> None:
         if _port_open(self.host, self.port):
-            return
+            if _is_existing_kangkang(self.url):
+                logging.info("Reusing existing KangkangWeather service at %s", self.url)
+                return
+            old_port = self.port
+            self.port = _find_free_port(self.host, self.port)
+            self.url = f"http://{self.host}:{self.port}/"
+            logging.warning("Port %s is occupied by another service; using %s", old_port, self.port)
         self.server = WeatherServer(
             (self.host, self.port),
             config_path=self.config_path,
@@ -111,6 +152,7 @@ class TrayRuntime:
             daemon=True,
         )
         self.server_thread.start()
+        logging.info("Started KangkangWeather service at %s", self.url)
         deadline = time.time() + 8
         while time.time() < deadline:
             if _port_open(self.host, self.port):
@@ -119,6 +161,7 @@ class TrayRuntime:
 
     def stop_server(self) -> None:
         if self.server is not None:
+            logging.info("Stopping KangkangWeather service")
             self.server.shutdown()
             self.server.monitor.stop()
             self.server.server_close()
@@ -192,15 +235,21 @@ def _make_icon_image():
 
 
 def run_tray(config_path: str | None = None, window_handle: int | None = None) -> None:
+    _configure_logging()
     try:
         import pystray
     except Exception as exc:  # pragma: no cover - optional desktop dependency
+        logging.exception("pystray import failed")
         raise RuntimeError("缺少 pystray，先执行：python -m pip install pystray pillow") from exc
 
-    runtime = TrayRuntime(config_path=config_path, window_handle=window_handle)
-    runtime.start_server()
-    if runtime.config.app.open_browser_on_start:
-        runtime.open_console()
+    try:
+        runtime = TrayRuntime(config_path=config_path, window_handle=window_handle)
+        runtime.start_server()
+        if runtime.config.app.open_browser_on_start:
+            runtime.open_console()
+    except Exception:
+        logging.exception("Failed to start tray runtime")
+        raise
 
     menu = pystray.Menu(
         pystray.MenuItem("打开控制台", runtime.open_console, default=True),

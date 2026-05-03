@@ -1,75 +1,44 @@
-# Kangkang Weather v2.1
+# Kangkang Weather v3.1.1
 
-Windows 微信天气提醒桌面版。程序在本机读取天气预报，通过已登录的 Windows 微信客户端把日报或风险变化提醒发送到指定会话。
+Windows 微信天气提醒桌面版。程序在本机获取天气预报，通过已登录的官方 Windows 微信客户端发送日报或风险变化提醒。
 
 ## 功能
 
-- 天气地址和微信好友分开管理，不再绑定在同一个“目标”里。
-- 地址管理器支持地址搜索、浏览器当前位置、IP 粗定位、新增、删除、重命名、设默认。
-- 微信好友管理器支持多个好友或群名称，自定义、重命名、删除、设默认。
-- 自动化任务可以组合任意地址和任意微信好友，配置轮询间隔、固定发送时间、免打扰时间。
-- 多源天气校验：Open-Meteo `best_match` + `gfs_seamless` + `icon_seamless` + `cma_grapes_global`，全部失败时尝试 wttr.in。
-- 默认任务仍是 `嘉鱼县 -> 湘楠`，每 120 分钟检查一次，`22:00-07:00` 免打扰。
+- 全国地址选择：省份 -> 城市 -> 区县三级选择，支持本地搜索“北京、朝阳区、嘉鱼”等关键字。
+- 微信好友和天气地址分开管理，可组合成多个自动化任务。
+- 自动化任务支持运行时间段、固定发送点、轮询间隔和提醒规则。
+- 天气查询记录保留最近 200 条，记录数据源数量、失败源、缓存、多源分歧和耗时。
+- 多源天气校验：Open-Meteo 主源 + 多模型对比，失败时尝试 wttr.in，网络全失败时可使用最近缓存。
+- 微信发送使用稳定前台自动化：自动选择已登录官方 Windows 微信窗口，搜索联系人优先 UIAutomation/键盘输入，默认不做搜索框或发送按钮坐标点击。
+- 消息正文默认使用“粘贴后 Enter，再 Ctrl+Enter”键盘提交；微信窗口中途消失会停止后续输入并给出诊断。
+- 天气日报样式为“今日分时段提醒 + 明天/后天简报”，支持保存发送前缀。
+- v3.1 新增运行总览、左上角版本号、运行追踪、迁移包导出和 GitHub 更新检查。
+- v3.1.1 修复桌面版启动时深度自检导致 `/api/state` 超时弹窗的问题，启动状态接口现在保持轻量。
+- 默认任务是 `嘉鱼县 -> 湘楠`，每 120 分钟检查一次，自动发送时间段为 `07:00-22:00`。
 
-## 安装
+## 使用
 
 ```powershell
 python -m pip install -r .\requirements-wechat-weather.txt
+python -m wechat_weather.cli desktop
 ```
 
-微信发送默认使用 `pywinauto-session`。目标会话需要在微信左侧会话列表可见。
-
-## 启动
-
-```powershell
-python -m wechat_weather.cli tray
-```
-
-首次不传 `--config` 时会自动创建用户配置：
-
-```text
-%APPDATA%\KangkangWeather\config.json
-```
-
-本地控制台：
-
-```text
-http://127.0.0.1:8766/
-```
+首次运行会在 `%APPDATA%\KangkangWeather\config.json` 创建用户配置。页面或桌面设置窗口会引导选择全国地址和微信好友/群名称。
 
 ## CLI
 
-预览默认地址并发送到默认微信好友，默认 dry-run：
-
-```powershell
-python -m wechat_weather.cli send-weather --config .\wechat_weather_config.example.json
-```
-
-指定地址和微信好友：
-
 ```powershell
 python -m wechat_weather.cli send-weather --location-id jiayu --wechat-target-id xiangnan
-```
-
-真实发送：
-
-```powershell
 python -m wechat_weather.cli send-weather --real --backend pywinauto-session
-```
-
-检查指定自动化任务，不发送微信：
-
-```powershell
 python -m wechat_weather.cli monitor-check --job-id default --dry-run
-```
-
-启动浏览器控制台：
-
-```powershell
+python -m wechat_weather.cli monitor-run-due --config "$env:APPDATA\KangkangWeather\config.json"
 python -m wechat_weather.cli serve --port 8766
+python -m wechat_weather.cli build-package
 ```
 
 ## 配置结构
+
+用户界面不需要填写经纬度。配置中会保留内部坐标字段供天气接口使用，用户只需要通过全国地址选择器保存地址。
 
 ```json
 {
@@ -77,20 +46,15 @@ python -m wechat_weather.cli serve --port 8766
     {
       "id": "jiayu",
       "name": "嘉鱼县",
-      "latitude": 29.9724209,
-      "longitude": 113.9335326,
+      "region_code": "421221",
+      "address_path": ["湖北省", "咸宁市", "嘉鱼县"],
       "source": "default",
       "enabled": true,
       "default": true
     }
   ],
   "wechat_targets": [
-    {
-      "id": "xiangnan",
-      "name": "湘楠",
-      "enabled": true,
-      "default": true
-    }
+    { "id": "xiangnan", "name": "湘楠", "enabled": true, "default": true }
   ],
   "automation_jobs": [
     {
@@ -100,17 +64,27 @@ python -m wechat_weather.cli serve --port 8766
       "enabled": true,
       "interval_minutes": 120,
       "fixed_times": [],
-      "quiet_start": "22:00",
-      "quiet_end": "07:00",
-      "allow_quiet_send": false
+      "active_windows": ["07:00-22:00"],
+      "allow_quiet_send": false,
+      "alert_options": {
+        "rain_threshold_percent": 50,
+        "rain_jump_percent": 30,
+        "temp_change_celsius": 3,
+        "weather_upgrade_enabled": true,
+        "future_rain_upgrade_enabled": true
+      }
     }
-  ]
+  ],
+  "message": {
+    "daily_style": "segmented_brief",
+    "daily_prefix": ""
+  }
 }
 ```
 
-旧版 `contact/recipients` 配置仍能读取，并会在保存设置时迁移到新结构。
+旧版 `contact/recipients` 和 `quiet_start/quiet_end` 配置仍能读取，并会在保存设置时迁移到新结构。
 
-## 打包 EXE
+## 打包
 
 ```powershell
 .\build_exe.ps1
@@ -119,9 +93,10 @@ python -m wechat_weather.cli serve --port 8766
 输出：
 
 ```text
-dist\KangkangWeather-v2.1.0.zip
+dist\KangkangWeather-v3.1.1.zip
+dist\KangkangWeatherSetup-v3.1.1.exe
 ```
 
 ## 说明
 
-本项目不使用微信协议登录、Hook 或注入，只控制当前电脑上已经登录的 Windows 微信客户端。天气和定位使用无 Key 来源：Open-Meteo Geocoding、浏览器定位和 ipapi.co。
+本项目不使用微信协议登录、Hook 或注入，只控制当前电脑上已经登录的 Windows 微信客户端。安装包未做代码签名，Windows SmartScreen 可能提醒。

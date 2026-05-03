@@ -1,10 +1,11 @@
 {
   "app": {
     "name": "KangkangWeather",
-    "version": "2.1.0",
+    "version": "3.1.1",
     "host": "127.0.0.1",
     "port": 8766,
-    "open_browser_on_start": true
+    "open_browser_on_start": true,
+    "setup_complete": false
   },
   "locations": [
     {
@@ -12,6 +13,12 @@
       "name": "嘉鱼县",
       "latitude": 29.9724209,
       "longitude": 113.9335326,
+      "region_code": "421221",
+      "address_path": [
+        "湖北省",
+        "咸宁市",
+        "嘉鱼县"
+      ],
       "source": "default",
       "enabled": true,
       "default": true
@@ -33,13 +40,23 @@
       "enabled": true,
       "interval_minutes": 120,
       "fixed_times": [],
+      "active_windows": [
+        "07:00-22:00"
+      ],
       "quiet_start": "22:00",
       "quiet_end": "07:00",
-      "allow_quiet_send": false
+      "allow_quiet_send": false,
+      "alert_options": {
+        "rain_threshold_percent": 50,
+        "rain_jump_percent": 30,
+        "temp_change_celsius": 3.0,
+        "weather_upgrade_enabled": true,
+        "future_rain_upgrade_enabled": true
+      }
     }
   ],
   "providers": {
-    "timeout_seconds": 20,
+    "timeout_seconds": 8,
     "language": "zh-cn",
     "primary": "open_meteo_best_match",
     "comparison_models": [
@@ -52,16 +69,24 @@
   "monitor": {
     "enabled": true,
     "backend": "pywinauto-session",
+    "wechat_send_strategy": "enter_first",
+    "allow_send_button_coordinate_fallback": false,
     "state_path": "weather_poll_state.json",
     "future_hours": 6,
     "daily_history_limit": 5,
+    "fixed_send_grace_minutes": 180,
+    "require_readiness_for_auto_send": true,
     "interval_minutes": 120,
     "quiet_start": "22:00",
     "quiet_end": "07:00"
   },
+  "message": {
+    "daily_style": "segmented_brief",
+    "daily_prefix": ""
+  },
   "release": {
     "package_name": "KangkangWeather",
-    "version": "2.1.0",
+    "version": "3.1.1",
     "output_dir": "dist"
   }
 }

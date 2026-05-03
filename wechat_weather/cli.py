@@ -2,11 +2,24 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
 from .config import dump_example, load_config
 from .weather import build_weather_message
 from .wechat import choose_sender, collect_diagnostics
+
+
+def _readiness_ok_for_real_send(real_send: bool) -> bool:
+    if not real_send:
+        return True
+    from .readiness import check_readiness
+
+    report = check_readiness(require_wechat=True).to_dict()
+    if report.get("can_send_now"):
+        return True
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return False
 
 
 def _print_result(result) -> int:
@@ -32,20 +45,30 @@ def cmd_send_weather(args: argparse.Namespace) -> int:
     message = build_weather_message(
         weather,
         comparison_models=config.providers.comparison_models,
+        daily_prefix=config.message.daily_prefix,
+        daily_style=config.message.daily_style,
     )
+    if not _readiness_ok_for_real_send(args.real):
+        return 2
     sender = choose_sender(
         real_send=args.real,
         backend=args.backend,
         window_handle=args.window_handle,
+        send_strategy=config.monitor.wechat_send_strategy,
+        allow_send_button_coordinate_fallback=config.monitor.allow_send_button_coordinate_fallback,
     )
     return _print_result(sender.send(target.name, message))
 
 
 def cmd_send_text(args: argparse.Namespace) -> int:
+    if not _readiness_ok_for_real_send(args.real):
+        return 2
     sender = choose_sender(
         real_send=args.real,
         backend=args.backend,
         window_handle=args.window_handle,
+        send_strategy=args.send_strategy,
+        allow_send_button_coordinate_fallback=args.allow_send_button_coordinate_fallback,
     )
     return _print_result(sender.send(args.contact, args.text))
 
@@ -54,6 +77,45 @@ def cmd_diagnostics(_: argparse.Namespace) -> int:
     for line in collect_diagnostics():
         print(line)
     return 0
+
+
+def cmd_readiness(_: argparse.Namespace) -> int:
+    from .readiness import check_readiness
+
+    report = check_readiness(require_wechat=True).to_dict()
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report.get("can_send_now") else 1
+
+
+def cmd_power_status(_: argparse.Namespace) -> int:
+    from .power import get_power_status
+
+    print(json.dumps(get_power_status(), ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_power_apply(args: argparse.Namespace) -> int:
+    from .power import apply_ac_power_profile
+
+    result = apply_ac_power_profile(args.monitor_timeout_minutes)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get("ok") else 1
+
+
+def cmd_scheduler_status(_: argparse.Namespace) -> int:
+    from .scheduler import scheduler_status
+
+    result = scheduler_status()
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get("ok") else 1
+
+
+def cmd_scheduler_repair(args: argparse.Namespace) -> int:
+    from .scheduler import repair_scheduler_tasks
+
+    result = repair_scheduler_tasks(args.config)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get("ok") else 1
 
 
 def cmd_init_config(args: argparse.Namespace) -> int:
@@ -87,10 +149,26 @@ def cmd_monitor_check(args: argparse.Namespace) -> int:
     return 0 if result.get("ok") else 1
 
 
+def cmd_monitor_run_due(args: argparse.Namespace) -> int:
+    from .monitor import WeatherMonitor
+
+    monitor = WeatherMonitor(config_path=args.config, window_handle=args.window_handle)
+    result = monitor.run_due(real_send=not args.dry_run)
+    print(result)
+    return 0 if result.get("ok") else 1
+
+
 def cmd_tray(args: argparse.Namespace) -> int:
     from .tray import run_tray
 
     run_tray(config_path=args.config, window_handle=args.window_handle)
+    return 0
+
+
+def cmd_desktop(args: argparse.Namespace) -> int:
+    from .desktop import run_desktop
+
+    run_desktop(config_path=args.config, window_handle=args.window_handle)
     return 0
 
 
@@ -150,10 +228,38 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Optional WeChat window handle for pywinauto-active.",
     )
+    text.add_argument(
+        "--send-strategy",
+        default="enter_first",
+        choices=["enter_first", "ctrl_enter_first", "enter_only"],
+        help="Keyboard send strategy for pywinauto backends.",
+    )
+    text.add_argument(
+        "--allow-send-button-coordinate-fallback",
+        action="store_true",
+        help="After keyboard send fails, allow button coordinate fallback. Disabled by default.",
+    )
     text.set_defaults(func=cmd_send_text)
 
     diagnostics = subparsers.add_parser("diagnostics", help="Check dependencies and WeChat windows.")
     diagnostics.set_defaults(func=cmd_diagnostics)
+
+    readiness = subparsers.add_parser("readiness", help="Check whether WeChat automation can send now.")
+    readiness.set_defaults(func=cmd_readiness)
+
+    power_status = subparsers.add_parser("power-status", help="Check display/sleep power settings.")
+    power_status.set_defaults(func=cmd_power_status)
+
+    power_apply = subparsers.add_parser("power-apply", help="Apply AC power profile: display off, no sleep.")
+    power_apply.add_argument("--monitor-timeout-minutes", type=int, default=5)
+    power_apply.set_defaults(func=cmd_power_apply)
+
+    scheduler_status_cmd = subparsers.add_parser("scheduler-status", help="Check KangkangWeather scheduled tasks.")
+    scheduler_status_cmd.set_defaults(func=cmd_scheduler_status)
+
+    scheduler_repair = subparsers.add_parser("scheduler-repair", help="Create or repair KangkangWeather scheduled tasks.")
+    scheduler_repair.add_argument("--config")
+    scheduler_repair.set_defaults(func=cmd_scheduler_repair)
 
     init_config = subparsers.add_parser("init-config", help="Write an example config JSON.")
     init_config.add_argument("--output", default="wechat_weather_config.json")
@@ -174,10 +280,21 @@ def build_parser() -> argparse.ArgumentParser:
     monitor_check.add_argument("--dry-run", action="store_true", help="Do not send WeChat messages.")
     monitor_check.set_defaults(func=cmd_monitor_check)
 
+    monitor_run_due = subparsers.add_parser("monitor-run-due", help="Run due monitor jobs, including fixed send times.")
+    monitor_run_due.add_argument("--config")
+    monitor_run_due.add_argument("--window-handle", type=int)
+    monitor_run_due.add_argument("--dry-run", action="store_true", help="Do not send WeChat messages.")
+    monitor_run_due.set_defaults(func=cmd_monitor_run_due)
+
     tray = subparsers.add_parser("tray", help="Run the Windows tray app.")
     tray.add_argument("--config", default=None)
     tray.add_argument("--window-handle", type=int)
     tray.set_defaults(func=cmd_tray)
+
+    desktop = subparsers.add_parser("desktop", help="Run the native desktop app.")
+    desktop.add_argument("--config", default=None)
+    desktop.add_argument("--window-handle", type=int)
+    desktop.set_defaults(func=cmd_desktop)
 
     build_package_cmd = subparsers.add_parser("build-package", help="Build Windows EXE zip package.")
     build_package_cmd.add_argument("--config", default="wechat_weather_config.example.json")
@@ -188,6 +305,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     parser = build_parser()
     args = parser.parse_args(argv)
     return args.func(args)

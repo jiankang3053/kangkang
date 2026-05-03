@@ -10,6 +10,7 @@ import time
 from typing import Any
 
 from .config import (
+    AlertOptionsConfig,
     AppConfig,
     AutomationJobConfig,
     LocationConfig,
@@ -56,6 +57,19 @@ def _parse_time(value: str) -> dt_time:
     return dt_time(hour=int(hour), minute=int(minute))
 
 
+def _parse_minutes(value: str, *, allow_2400: bool = False) -> int:
+    hour, minute = value.split(":", 1)
+    hour_int = int(hour)
+    minute_int = int(minute)
+    if minute_int < 0 or minute_int >= 60:
+        raise ValueError(f"时间格式错误：{value}")
+    if hour_int == 24 and minute_int == 0 and allow_2400:
+        return 24 * 60
+    if hour_int < 0 or hour_int >= 24:
+        raise ValueError(f"时间格式错误：{value}")
+    return hour_int * 60 + minute_int
+
+
 def _is_quiet(now: datetime, start: str, end: str) -> bool:
     start_time = _parse_time(start)
     end_time = _parse_time(end)
@@ -63,6 +77,24 @@ def _is_quiet(now: datetime, start: str, end: str) -> bool:
     if start_time <= end_time:
         return start_time <= current < end_time
     return current >= start_time or current < end_time
+
+
+def _is_active_window(now: datetime, windows: list[str]) -> bool:
+    current = now.hour * 60 + now.minute
+    for window in windows:
+        if "-" not in window:
+            continue
+        start_text, end_text = [item.strip() for item in window.split("-", 1)]
+        try:
+            start = _parse_minutes(start_text)
+            end = _parse_minutes(end_text, allow_2400=True)
+        except Exception:
+            continue
+        if start < end and start <= current < end:
+            return True
+        if start > end and (current >= start or current < end):
+            return True
+    return False
 
 
 def _today_key(now: datetime) -> str:
@@ -80,6 +112,10 @@ def _safe_datetime(value: Any) -> datetime | None:
         return datetime.fromisoformat(str(value))
     except ValueError:
         return None
+
+
+def _fixed_run_key(now: datetime, fixed_time: str) -> str:
+    return f"{_today_key(now)}:{fixed_time}"
 
 
 def _future_rows(
@@ -173,16 +209,28 @@ def evaluate_alerts(
     current_snapshot: dict[str, Any],
     now: datetime | None = None,
     future_hours: int = 6,
+    alert_options: AlertOptionsConfig | dict[str, Any] | None = None,
 ) -> list[Alert]:
     if previous_snapshot is None:
         return []
 
     now = now or _now()
+    if isinstance(alert_options, AlertOptionsConfig):
+        options = asdict(alert_options)
+    elif isinstance(alert_options, dict):
+        options = alert_options
+    else:
+        options = asdict(AlertOptionsConfig())
+    rain_threshold = int(options.get("rain_threshold_percent", 50))
+    rain_jump = int(options.get("rain_jump_percent", 30))
+    temp_change = float(options.get("temp_change_celsius", 3.0))
+    weather_upgrade_enabled = bool(options.get("weather_upgrade_enabled", True))
+    future_rain_upgrade_enabled = bool(options.get("future_rain_upgrade_enabled", True))
     previous = _snapshot_signal(previous_snapshot, now, future_hours=future_hours)
     current = _snapshot_signal(current_snapshot, now, future_hours=future_hours)
     alerts: list[Alert] = []
 
-    if previous["future_rain_max"] < 50 <= current["future_rain_max"]:
+    if previous["future_rain_max"] < rain_threshold <= current["future_rain_max"]:
         alerts.append(
             Alert(
                 key="rain_6h_threshold",
@@ -191,7 +239,7 @@ def evaluate_alerts(
             )
         )
 
-    if current["future_rain_max"] - previous["future_rain_max"] >= 30:
+    if current["future_rain_max"] - previous["future_rain_max"] >= rain_jump:
         alerts.append(
             Alert(
                 key="rain_6h_jump",
@@ -204,7 +252,8 @@ def evaluate_alerts(
         )
 
     if (
-        current["future_severity_max"] > previous["future_severity_max"]
+        weather_upgrade_enabled
+        and current["future_severity_max"] > previous["future_severity_max"]
         and current["future_severity_max"] >= 4
     ):
         alerts.append(
@@ -216,8 +265,8 @@ def evaluate_alerts(
         )
 
     if (
-        abs(current["today_temp_min"] - previous["today_temp_min"]) >= 3
-        or abs(current["today_temp_max"] - previous["today_temp_max"]) >= 3
+        abs(current["today_temp_min"] - previous["today_temp_min"]) >= temp_change
+        or abs(current["today_temp_max"] - previous["today_temp_max"]) >= temp_change
     ):
         alerts.append(
             Alert(
@@ -234,7 +283,11 @@ def evaluate_alerts(
         zip(previous["future_days"], current["future_days"]),
         start=1,
     ):
-        if new_day["rain_order"] > old_day["rain_order"] and new_day["rain_order"] >= 1:
+        if (
+            future_rain_upgrade_enabled
+            and new_day["rain_order"] > old_day["rain_order"]
+            and new_day["rain_order"] >= 1
+        ):
             label = ["明天", "后天", "大后天"][index - 1]
             alerts.append(
                 Alert(
@@ -355,6 +408,8 @@ class WeatherMonitor:
                 "wechat_target": asdict(target),
                 "interval_minutes": job.interval_minutes,
                 "fixed_times": job.fixed_times,
+                "active_windows": job.active_windows,
+                "alert_options": asdict(job.alert_options),
                 "quiet_hours": {
                     "start": job.quiet_start,
                     "end": job.quiet_end,
@@ -369,6 +424,9 @@ class WeatherMonitor:
                 ),
                 "recent_checks": state_item.get("recent_checks", [])[-5:],
                 "recent_sends": state_item.get("recent_sends", [])[-5:],
+                "fixed_pending": list((state_item.get("fixed_pending") or {}).values())[-5:]
+                if isinstance(state_item.get("fixed_pending"), dict)
+                else [],
             }
 
         status.update(
@@ -479,21 +537,34 @@ class WeatherMonitor:
     ) -> bool:
         return now >= self._next_interval_time(job, job_state, now)
 
-    def _fixed_due_times(
+    def _fixed_due_entries(
         self,
         job: AutomationJobConfig,
         job_state: dict[str, Any],
         now: datetime,
-    ) -> list[str]:
+        grace_minutes: int,
+    ) -> list[dict[str, Any]]:
         sent = set(job_state.get("fixed_sent_keys", []))
+        expired = set(job_state.get("fixed_expired_keys", []))
         due = []
+        grace_seconds = max(1, grace_minutes) * 60
         for fixed in job.fixed_times:
             fixed_time = _parse_time(fixed)
             scheduled = datetime.combine(now.date(), fixed_time)
             seconds = (now - scheduled).total_seconds()
-            key = f"{_today_key(now)}:{fixed}"
-            if 0 <= seconds < 70 and key not in sent:
-                due.append(fixed)
+            key = _fixed_run_key(now, fixed)
+            if key in sent:
+                continue
+            entry = {
+                "fixed_time": fixed,
+                "key": key,
+                "due_at": scheduled.isoformat(timespec="seconds"),
+                "deadline_at": (scheduled + timedelta(seconds=grace_seconds)).isoformat(timespec="seconds"),
+            }
+            if 0 <= seconds <= grace_seconds:
+                due.append({**entry, "status": "due"})
+            elif seconds > grace_seconds and key not in expired:
+                due.append({**entry, "status": "expired"})
         return due
 
     def _next_fixed_time(self, job: AutomationJobConfig, now: datetime) -> datetime | None:
@@ -536,8 +607,16 @@ class WeatherMonitor:
                 results.append(result)
                 if result.get("send_result"):
                     last_send = result["send_result"]
-            for fixed in self._fixed_due_times(job, job_state, now):
-                result = self._send_fixed_weather(config, job, fixed, state, real_send=real_send)
+            for fixed_entry in self._fixed_due_entries(
+                job,
+                job_state,
+                now,
+                config.monitor.fixed_send_grace_minutes,
+            ):
+                if fixed_entry["status"] == "expired":
+                    result = self._expire_fixed_weather(config, job, fixed_entry, state, real_send=real_send)
+                else:
+                    result = self._send_fixed_weather(config, job, fixed_entry, state, real_send=real_send)
                 results.append(result)
                 if result.get("send_result"):
                     last_send = result["send_result"]
@@ -599,6 +678,47 @@ class WeatherMonitor:
         target = config.wechat_target_by_id(job.wechat_target_id)
         now = _now()
         job_state = state["jobs"].setdefault(job.id, {})
+        active_window = _is_active_window(now, job.active_windows)
+        if not active_window and not job.allow_quiet_send:
+            result: dict[str, Any] = {
+                "ok": True,
+                "type": "interval_skipped",
+                "job_id": job.id,
+                "location": asdict(location),
+                "wechat_target": asdict(target),
+                "checked_at": now.isoformat(timespec="seconds"),
+                "dry_run": not real_send,
+                "baseline_created": False,
+                "quiet": True,
+                "active_window": False,
+                "outside_active_window": True,
+                "active_windows": job.active_windows,
+                "alerts": [],
+                "sent": False,
+                "send_result": None,
+                "message": f"{location.name} -> {target.name}：未在自动发送时间段内，已跳过并记录。",
+                "source_count": 0,
+                "source_disagreement": False,
+                "provider_failures": [],
+            }
+            job_state["last_check_at"] = result["checked_at"]
+            job_state["last_result"] = result["message"]
+            job_state["recent_checks"] = self._append_limited(
+                job_state.get("recent_checks", []),
+                {
+                    "checked_at": result["checked_at"],
+                    "type": result["type"],
+                    "alerts": [],
+                    "sent": False,
+                    "quiet": True,
+                    "active_window": False,
+                    "outside_active_window": True,
+                    "source_count": 0,
+                    "source_disagreement": False,
+                },
+                config.monitor.daily_history_limit,
+            )
+            return result
         previous = job_state.get("last_snapshot")
         current = self._job_weather_snapshot(config, location)
         day_key = _today_key(now)
@@ -615,9 +735,10 @@ class WeatherMonitor:
             current,
             now=now,
             future_hours=config.monitor.future_hours,
+            alert_options=job.alert_options,
         )
         active_alerts = [alert for alert in alerts if alert.key not in sent_today]
-        quiet = _is_quiet(now, job.quiet_start, job.quiet_end)
+        quiet = not active_window
         result: dict[str, Any] = {
             "ok": True,
             "type": "interval_check",
@@ -628,6 +749,9 @@ class WeatherMonitor:
             "dry_run": not real_send,
             "baseline_created": previous is None,
             "quiet": quiet,
+            "active_window": active_window,
+            "outside_active_window": not active_window,
+            "active_windows": job.active_windows,
             "alerts": [asdict(alert) for alert in alerts],
             "sent": False,
             "send_result": None,
@@ -664,6 +788,10 @@ class WeatherMonitor:
                     real_send=real_send,
                     backend=config.monitor.backend,
                     window_handle=self.window_handle,
+                    send_strategy=config.monitor.wechat_send_strategy,
+                    allow_send_button_coordinate_fallback=(
+                        config.monitor.allow_send_button_coordinate_fallback
+                    ),
                 )
                 send_result = sender.send(target.name, message)
                 result["ok"] = send_result.ok
@@ -701,6 +829,8 @@ class WeatherMonitor:
                 "alerts": [alert["key"] for alert in result["alerts"]],
                 "sent": result["sent"],
                 "quiet": result["quiet"],
+                "active_window": result["active_window"],
+                "outside_active_window": result["outside_active_window"],
                 "source_count": result["source_count"],
                 "source_disagreement": result["source_disagreement"],
             },
@@ -721,7 +851,8 @@ class WeatherMonitor:
         now = _now()
         job_state = state["jobs"].setdefault(job.id, {})
         key = f"{_today_key(now)}:{fixed_time}"
-        quiet = _is_quiet(now, job.quiet_start, job.quiet_end)
+        active_window = _is_active_window(now, job.active_windows)
+        quiet = not active_window
         fixed_sent_keys = set(job_state.get("fixed_sent_keys", []))
         result: dict[str, Any] = {
             "ok": True,
@@ -733,20 +864,31 @@ class WeatherMonitor:
             "checked_at": now.isoformat(timespec="seconds"),
             "dry_run": not real_send,
             "quiet": quiet,
+            "active_window": active_window,
+            "outside_active_window": not active_window,
+            "active_windows": job.active_windows,
             "sent": False,
             "send_result": None,
             "message": "",
         }
-        if quiet and not job.allow_quiet_send:
-            result["message"] = f"{location.name} -> {target.name}：固定发送时间处于免打扰时段，已跳过。"
+        if not active_window and not job.allow_quiet_send:
+            result["message"] = f"{location.name} -> {target.name}：固定发送点未在自动发送时间段内，已跳过。"
             fixed_sent_keys.add(key)
         else:
             snapshot = self._job_weather_snapshot(config, location)
-            message = build_weather_message_from_snapshot(snapshot)
+            message = build_weather_message_from_snapshot(
+                snapshot,
+                daily_prefix=config.message.daily_prefix,
+                daily_style=config.message.daily_style,
+            )
             sender = choose_sender(
                 real_send=real_send,
                 backend=config.monitor.backend,
                 window_handle=self.window_handle,
+                send_strategy=config.monitor.wechat_send_strategy,
+                allow_send_button_coordinate_fallback=(
+                    config.monitor.allow_send_button_coordinate_fallback
+                ),
             )
             send_result = sender.send(target.name, message)
             result["ok"] = send_result.ok
@@ -754,20 +896,252 @@ class WeatherMonitor:
             result["send_result"] = asdict(send_result)
             result["message"] = message
             job_state["last_snapshot"] = snapshot
+            job_state["recent_sends"] = self._append_limited(
+                job_state.get("recent_sends", []),
+                {
+                    "sent_at": result["checked_at"],
+                    "type": "fixed_weather",
+                    "fixed_time": fixed_time,
+                    "dry_run": not real_send,
+                    "ok": send_result.ok,
+                    "delivered": bool(real_send and send_result.ok),
+                    "detail": send_result.detail,
+                    "error_analysis": send_result.error_analysis,
+                },
+                config.monitor.daily_history_limit,
+            )
             if send_result.ok:
                 fixed_sent_keys.add(key)
-                job_state["recent_sends"] = self._append_limited(
-                    job_state.get("recent_sends", []),
-                    {
-                        "sent_at": result["checked_at"],
-                        "type": "fixed_weather",
-                        "fixed_time": fixed_time,
-                        "dry_run": not real_send,
-                        "ok": send_result.ok,
-                        "delivered": bool(real_send and send_result.ok),
-                    },
-                    config.monitor.daily_history_limit,
-                )
         job_state["fixed_sent_keys"] = sorted(fixed_sent_keys)
         job_state["last_result"] = result["message"]
         return result
+
+    def _send_fixed_weather(
+        self,
+        config: AppConfig,
+        job: AutomationJobConfig,
+        fixed_entry: dict[str, Any],
+        state: dict[str, Any],
+        real_send: bool,
+    ) -> dict[str, Any]:
+        location = config.location_by_id(job.location_id)
+        target = config.wechat_target_by_id(job.wechat_target_id)
+        now = _now()
+        job_state = state["jobs"].setdefault(job.id, {})
+        fixed_time = str(fixed_entry["fixed_time"])
+        key = str(fixed_entry["key"])
+        from .run_trace import append_step, new_run_id
+
+        run_id = new_run_id("fixed")
+        append_step(
+            run_id,
+            "start",
+            "running",
+            f"固定发送 {fixed_time}: {location.name} -> {target.name}",
+            job_id=job.id,
+            run_type="fixed_weather",
+            detail={"fixed_key": key, "real_send": real_send},
+        )
+        active_window = _is_active_window(now, job.active_windows)
+        fixed_sent_keys = set(job_state.get("fixed_sent_keys", []))
+        fixed_pending = job_state.setdefault("fixed_pending", {})
+        pending_item = fixed_pending.setdefault(
+            key,
+            {
+                "job_id": job.id,
+                "type": "fixed_weather",
+                "fixed_time": fixed_time,
+                "due_at": fixed_entry.get("due_at"),
+                "deadline_at": fixed_entry.get("deadline_at"),
+                "status": "pending",
+                "blocked_reason": None,
+                "attempt_count": 0,
+                "last_attempt_at": None,
+                "sent_at": None,
+            },
+        )
+        checked_at = now.isoformat(timespec="seconds")
+        pending_item["attempt_count"] = int(pending_item.get("attempt_count") or 0) + 1
+        pending_item["last_attempt_at"] = checked_at
+        result: dict[str, Any] = {
+            "ok": True,
+            "type": "fixed_weather",
+            "job_id": job.id,
+            "location": asdict(location),
+            "wechat_target": asdict(target),
+            "fixed_time": fixed_time,
+            "fixed_key": key,
+            "due_at": fixed_entry.get("due_at"),
+            "deadline_at": fixed_entry.get("deadline_at"),
+            "checked_at": checked_at,
+            "dry_run": not real_send,
+            "quiet": not active_window,
+            "active_window": active_window,
+            "outside_active_window": not active_window,
+            "active_windows": job.active_windows,
+            "sent": False,
+            "send_result": None,
+            "message": "",
+            "run_id": run_id,
+        }
+
+        if real_send and config.monitor.require_readiness_for_auto_send:
+            from .readiness import check_readiness
+
+            readiness = check_readiness(require_wechat=True).to_dict()
+            result["readiness"] = readiness
+            if not readiness.get("can_send_now"):
+                blocked_reason = str(readiness.get("status") or "blocked")
+                pending_item["status"] = "waiting_for_ready"
+                pending_item["blocked_reason"] = blocked_reason
+                result.update(
+                    {
+                        "sent": False,
+                        "will_retry": True,
+                        "blocked_reason": blocked_reason,
+                        "message": (
+                            f"{location.name} -> {target.name}: fixed send {fixed_time} is waiting "
+                            f"for a usable desktop/WeChat session before {fixed_entry.get('deadline_at')}."
+                        ),
+                    }
+                )
+                append_step(
+                    run_id,
+                    "readiness",
+                    "blocked",
+                    result["message"],
+                    job_id=job.id,
+                    run_type="fixed_weather",
+                    detail=readiness,
+                )
+                job_state["fixed_pending"] = fixed_pending
+                job_state["last_result"] = result["message"]
+                return result
+            append_step(
+                run_id,
+                "readiness",
+                "ok",
+                "固定发送前检查通过。",
+                job_id=job.id,
+                run_type="fixed_weather",
+                detail=readiness,
+            )
+
+        snapshot = self._job_weather_snapshot(config, location)
+        append_step(
+            run_id,
+            "weather",
+            "ok",
+            "固定发送天气数据获取完成。",
+            job_id=job.id,
+            run_type="fixed_weather",
+            detail={"location": location.name},
+        )
+        message = build_weather_message_from_snapshot(
+            snapshot,
+            daily_prefix=config.message.daily_prefix,
+            daily_style=config.message.daily_style,
+        )
+        sender = choose_sender(
+            real_send=real_send,
+            backend=config.monitor.backend,
+            window_handle=self.window_handle,
+            send_strategy=config.monitor.wechat_send_strategy,
+            allow_send_button_coordinate_fallback=(
+                config.monitor.allow_send_button_coordinate_fallback
+            ),
+        )
+        send_result = sender.send(target.name, message)
+        result["ok"] = send_result.ok
+        result["sent"] = bool(real_send and send_result.ok)
+        result["send_result"] = asdict(send_result)
+        result["message"] = message
+        append_step(
+            run_id,
+            "wechat_send" if real_send else "dry_run",
+            "ok" if send_result.ok else "failed",
+            send_result.detail,
+            job_id=job.id,
+            run_type="fixed_weather",
+            detail={"error_analysis": send_result.error_analysis},
+        )
+        job_state["last_snapshot"] = snapshot
+        job_state["recent_sends"] = self._append_limited(
+            job_state.get("recent_sends", []),
+            {
+                "sent_at": result["checked_at"],
+                "type": "fixed_weather",
+                "fixed_time": fixed_time,
+                "dry_run": not real_send,
+                "ok": send_result.ok,
+                "delivered": bool(real_send and send_result.ok),
+                "detail": send_result.detail,
+                "error_analysis": send_result.error_analysis,
+            },
+            config.monitor.daily_history_limit,
+        )
+        if send_result.ok:
+            fixed_sent_keys.add(key)
+            fixed_pending.pop(key, None)
+        else:
+            pending_item["status"] = "failed_waiting_for_retry"
+            pending_item["blocked_reason"] = send_result.error_analysis.get("category")
+        job_state["fixed_sent_keys"] = sorted(fixed_sent_keys)
+        job_state["fixed_pending"] = fixed_pending
+        job_state["last_result"] = result["message"]
+        return result
+
+    def _expire_fixed_weather(
+        self,
+        config: AppConfig,
+        job: AutomationJobConfig,
+        fixed_entry: dict[str, Any],
+        state: dict[str, Any],
+        real_send: bool,
+    ) -> dict[str, Any]:
+        location = config.location_by_id(job.location_id)
+        target = config.wechat_target_by_id(job.wechat_target_id)
+        job_state = state["jobs"].setdefault(job.id, {})
+        key = str(fixed_entry["key"])
+        from .run_trace import append_step, new_run_id
+
+        run_id = new_run_id("expired")
+        expired = set(job_state.get("fixed_expired_keys", []))
+        expired.add(key)
+        pending = job_state.get("fixed_pending", {})
+        if isinstance(pending, dict):
+            pending.pop(key, None)
+            job_state["fixed_pending"] = pending
+        job_state["fixed_expired_keys"] = sorted(expired)
+        checked_at = _now().isoformat(timespec="seconds")
+        message = (
+            f"{location.name} -> {target.name}: fixed send {fixed_entry['fixed_time']} expired "
+            f"after compensation deadline {fixed_entry.get('deadline_at')}."
+        )
+        append_step(
+            run_id,
+            "expired",
+            "expired",
+            message,
+            job_id=job.id,
+            run_type="fixed_weather_expired",
+            detail={"fixed_key": key, "real_send": real_send},
+        )
+        job_state["last_result"] = message
+        return {
+            "ok": True,
+            "type": "fixed_weather_expired",
+            "job_id": job.id,
+            "location": asdict(location),
+            "wechat_target": asdict(target),
+            "fixed_time": fixed_entry["fixed_time"],
+            "fixed_key": key,
+            "due_at": fixed_entry.get("due_at"),
+            "deadline_at": fixed_entry.get("deadline_at"),
+            "checked_at": checked_at,
+            "dry_run": not real_send,
+            "sent": False,
+            "send_result": None,
+            "message": message,
+            "run_id": run_id,
+        }

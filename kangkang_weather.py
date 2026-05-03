@@ -7,4 +7,4 @@ from wechat_weather.cli import main
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:] or ["tray"]))
+    raise SystemExit(main(sys.argv[1:] or ["desktop"]))

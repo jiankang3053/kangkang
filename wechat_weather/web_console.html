@@ -26,6 +26,21 @@
       font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
       letter-spacing: 0;
     }
+    .version-badge {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      z-index: 30;
+      min-height: 26px;
+      padding: 4px 9px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: rgba(255, 255, 255, .92);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 18px;
+      box-shadow: 0 4px 14px rgba(21, 24, 20, .08);
+    }
     .shell {
       display: grid;
       grid-template-columns: 292px minmax(0, 1fr);
@@ -176,6 +191,29 @@
     .status.ok { color: var(--accent); }
     .status.bad { color: var(--bad); }
     .status.warn { color: var(--warn); }
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(150px, 1fr));
+      gap: 10px;
+    }
+    .dash-card {
+      border-top: 1px solid var(--line);
+      padding-top: 10px;
+      min-height: 70px;
+    }
+    .dash-card strong {
+      display: block;
+      font-size: 18px;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+    .dash-card span {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
     .manager-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(280px, 1fr));
@@ -202,7 +240,7 @@
     }
     .form-line {
       display: grid;
-      grid-template-columns: repeat(4, minmax(120px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
       gap: 10px;
       align-items: end;
     }
@@ -214,6 +252,43 @@
       color: var(--ink);
       font-size: 13px;
     }
+    .subsection {
+      border-top: 1px solid var(--line);
+      padding-top: 12px;
+      display: grid;
+      gap: 10px;
+    }
+    .subsection h4 {
+      margin: 0;
+      font-size: 13px;
+      line-height: 1.3;
+    }
+    .preset-row, .chip-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .preset-row button {
+      height: 34px;
+      padding: 0 11px;
+    }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 32px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fbfcfa;
+      padding: 5px 9px;
+      font-size: 13px;
+    }
+    .chip button {
+      height: 24px;
+      padding: 0 7px;
+      border-radius: 5px;
+      color: var(--bad);
+    }
     .event {
       border-top: 1px solid var(--line);
       padding-top: 8px;
@@ -222,16 +297,47 @@
       line-height: 1.55;
     }
     .event strong { color: var(--ink); }
+    .setup-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 22px;
+      background: rgba(243, 245, 241, .96);
+    }
+    .setup-overlay.show { display: flex; }
+    .setup-panel {
+      width: min(900px, 100%);
+      max-height: calc(100vh - 44px);
+      overflow: auto;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 22px;
+      display: grid;
+      gap: 16px;
+      box-shadow: 0 18px 60px rgba(31, 47, 30, .12);
+    }
+    .setup-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(160px, 1fr));
+      gap: 10px;
+      align-items: end;
+    }
     @media (max-width: 1180px) {
       .metrics { grid-template-columns: 1fr; }
       .form-line { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
     }
     @media (max-width: 920px) {
       .shell, .grid, .manager-grid, .topbar { grid-template-columns: 1fr; }
+      .dashboard-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       aside { border-right: 0; border-bottom: 1px solid var(--line); }
       .controls { justify-content: stretch; }
       label, button, select, input { width: 100%; }
       .form-line { grid-template-columns: 1fr; }
+      .setup-grid { grid-template-columns: 1fr; }
       .item-row { grid-template-columns: 1fr; }
       .row-actions { justify-content: stretch; }
       .row-actions button { width: auto; flex: 1 1 120px; }
@@ -239,6 +345,46 @@
   </style>
 </head>
 <body>
+  <div id="versionBadge" class="version-badge">v-</div>
+  <div id="setupOverlay" class="setup-overlay">
+    <div class="setup-panel">
+      <div>
+        <h2>首次设置</h2>
+        <p>先设置天气地址和微信好友/群名称。程序只控制当前电脑已登录的 Windows 微信，不会使用微信协议登录。</p>
+      </div>
+      <div class="setup-grid">
+        <label>省份
+          <select id="setupProvince"></select>
+        </label>
+        <label>城市
+          <select id="setupCity"></select>
+        </label>
+        <label>区县
+          <select id="setupDistrict"></select>
+        </label>
+      </div>
+      <div class="setup-grid">
+        <label>搜索天气地址
+          <input id="setupLocationQuery" placeholder="例如 北京、朝阳区、嘉鱼">
+        </label>
+        <button id="setupSearchLocation">搜索地址</button>
+      </div>
+      <div id="setupLocationCandidates" class="row-list"></div>
+      <div class="setup-grid">
+        <label>微信好友/群名称
+          <input id="setupTarget" placeholder="必须和微信搜索结果名称一致">
+        </label>
+        <button id="setupTestTarget">打开会话测试</button>
+        <button id="setupTestFileTransfer">打开文件传输助手</button>
+        <button id="setupSendTestTarget" class="secondary">发送测试消息到目标</button>
+        <button id="setupSendTestFileTransfer" class="secondary">发送测试消息到文件传输助手</button>
+      </div>
+      <div class="row-actions">
+        <button id="setupComplete" class="primary">保存并进入控制台</button>
+      </div>
+      <pre id="setupOutput"></pre>
+    </div>
+  </div>
   <div class="shell">
     <aside>
       <h1>Kangkang Weather</h1>
@@ -271,11 +417,26 @@
               <option value="wxauto">wxauto</option>
             </select>
           </label>
+          <label>发送前缀
+            <input id="dailyPrefix" placeholder="例如：早上好，今天出门前看一下天气：">
+          </label>
+          <button id="saveMessageSettings" class="secondary">保存前缀</button>
           <button id="refresh">刷新预览</button>
           <button id="check" class="secondary">立即检查</button>
+          <button id="openTarget" class="secondary">打开会话测试</button>
+          <button id="sendTestMessage" class="secondary">发送测试消息</button>
           <button id="send" class="primary">发送今日天气</button>
         </div>
       </div>
+      <section>
+        <h2>运行总览</h2>
+        <div id="dashboardCards" class="dashboard-grid">
+          <div class="dash-card"><strong>-</strong><span>自动发送环境</span></div>
+          <div class="dash-card"><strong>-</strong><span>息屏/电源状态</span></div>
+          <div class="dash-card"><strong>-</strong><span>定时任务</span></div>
+          <div class="dash-card"><strong>-</strong><span>下一次完整发送</span></div>
+        </div>
+      </section>
       <div class="grid">
         <section>
           <h2>今日预报</h2>
@@ -304,6 +465,11 @@
             <h2>最近发送</h2>
             <div id="recentSends" class="row-list"></div>
           </section>
+          <section>
+            <h2>天气查询记录</h2>
+            <button id="refreshWeatherHistory">刷新记录</button>
+            <div id="weatherHistory" class="row-list"></div>
+          </section>
         </div>
       </div>
       <section class="wide">
@@ -312,12 +478,20 @@
           <div>
             <h3>地址管理</h3>
             <div class="form-line">
+              <label>省份
+                <select id="locationProvince"></select>
+              </label>
+              <label>城市
+                <select id="locationCity"></select>
+              </label>
+              <label>区县
+                <select id="locationDistrict"></select>
+              </label>
+              <button id="saveSelectedLocation" class="secondary">保存所选地址</button>
               <label>搜索地址
-                <input id="locationQuery" placeholder="例如 嘉鱼县、武汉">
+                <input id="locationQuery" placeholder="北京、朝阳区、嘉鱼">
               </label>
               <button id="searchLocation">搜索</button>
-              <button id="browserLocation">使用当前位置</button>
-              <button id="ipLocation">IP 定位</button>
             </div>
             <div id="locationCandidates" class="row-list"></div>
             <div id="locationList" class="row-list"></div>
@@ -347,18 +521,59 @@
               <label>轮询分钟
                 <input id="jobInterval" type="number" min="1" value="120">
               </label>
-              <label>固定发送时间
-                <input id="jobFixedTimes" placeholder="07:30,18:00">
-              </label>
-              <label>免打扰开始
-                <input id="jobQuietStart" type="time" value="22:00">
-              </label>
-              <label>免打扰结束
-                <input id="jobQuietEnd" type="time" value="07:00">
-              </label>
-              <label class="check-label">
-                <input id="jobAllowQuiet" type="checkbox">免打扰仍发送
-              </label>
+            </div>
+            <div class="subsection">
+              <h4>运行时间段</h4>
+              <div id="jobWindowPresets" class="preset-row">
+                <button data-window="06:00-09:00">早晨</button>
+                <button data-window="09:00-12:00">上午</button>
+                <button data-window="12:00-18:00">下午</button>
+                <button data-window="18:00-22:00">晚上</button>
+                <button data-window="00:00-24:00">全天</button>
+              </div>
+              <div class="form-line">
+                <label>自定义开始
+                  <input id="jobWindowStart" type="time" value="07:00">
+                </label>
+                <label>自定义结束
+                  <input id="jobWindowEnd" type="time" value="22:00">
+                </label>
+                <button id="addJobWindow">新增时间段</button>
+                <label class="check-label">
+                  <input id="jobAllowQuiet" type="checkbox">允许时间段外自动发送
+                </label>
+              </div>
+              <div id="jobActiveWindows" class="chip-list"></div>
+            </div>
+            <div class="subsection">
+              <h4>固定发送点</h4>
+              <div class="form-line">
+                <label>发送时间
+                  <input id="jobFixedTime" type="time" value="07:30">
+                </label>
+                <button id="addJobFixedTime">新增固定点</button>
+              </div>
+              <div id="jobFixedList" class="chip-list"></div>
+            </div>
+            <div class="subsection">
+              <h4>提醒规则</h4>
+              <div class="form-line">
+                <label>降雨阈值 %
+                  <input id="jobRainThreshold" type="number" min="1" max="100" value="50">
+                </label>
+                <label>降雨突增 %
+                  <input id="jobRainJump" type="number" min="1" max="100" value="30">
+                </label>
+                <label>温差阈值 ℃
+                  <input id="jobTempChange" type="number" min="0.1" step="0.1" value="3">
+                </label>
+                <label class="check-label">
+                  <input id="jobWeatherUpgrade" type="checkbox" checked>天气升级提醒
+                </label>
+                <label class="check-label">
+                  <input id="jobFutureRainUpgrade" type="checkbox" checked>明后天降雨升级
+                </label>
+              </div>
             </div>
             <div class="row-actions">
               <button id="saveJob" class="secondary">保存任务</button>
@@ -369,8 +584,94 @@
           </div>
           <div class="wide">
             <h3>环境诊断</h3>
-            <button id="diagnostics">刷新诊断</button>
+            <div class="row-actions">
+              <button id="compatCheck" class="secondary">兼容性自检</button>
+              <button id="readinessCheck" class="secondary">自动发送环境</button>
+              <button id="powerStatus" class="secondary">息屏/睡眠检查</button>
+              <button id="schedulerStatus" class="secondary">定时任务医生</button>
+              <button id="checkUpdate" class="secondary">检查更新</button>
+              <button id="exportMigration">迁移包</button>
+              <button id="diagnostics">刷新诊断</button>
+              <button id="exportDiagnostics">导出诊断包</button>
+            </div>
             <pre id="diagnosticsOutput"></pre>
+          </div>
+          <div class="wide">
+            <h3>自动化配置</h3>
+            <div class="form-line">
+              <label>省份
+                <select id="assistProvince"></select>
+              </label>
+              <label>城市
+                <select id="assistCity"></select>
+              </label>
+              <label>区县
+                <select id="assistDistrict"></select>
+              </label>
+              <label>微信好友/群
+                <input id="assistTarget" placeholder="必须和微信搜索结果一致">
+              </label>
+              <label>轮询分钟
+                <input id="assistInterval" type="number" min="1" value="120">
+              </label>
+            </div>
+            <div class="subsection">
+              <h4>运行时间段</h4>
+              <div id="assistWindowPresets" class="preset-row">
+                <button data-window="06:00-09:00">早晨</button>
+                <button data-window="09:00-12:00">上午</button>
+                <button data-window="12:00-18:00">下午</button>
+                <button data-window="18:00-22:00">晚上</button>
+                <button data-window="00:00-24:00">全天</button>
+              </div>
+              <div class="form-line">
+                <label>自定义开始
+                  <input id="assistWindowStart" type="time" value="07:00">
+                </label>
+                <label>自定义结束
+                  <input id="assistWindowEnd" type="time" value="22:00">
+                </label>
+                <button id="addAssistWindow">新增时间段</button>
+                <label class="check-label">
+                  <input id="assistAllowQuiet" type="checkbox">允许时间段外自动发送
+                </label>
+              </div>
+              <div id="assistActiveWindows" class="chip-list"></div>
+            </div>
+            <div class="subsection">
+              <h4>固定发送点</h4>
+              <div class="form-line">
+                <label>发送时间
+                  <input id="assistFixedTime" type="time" value="07:30">
+                </label>
+                <button id="addAssistFixedTime">新增固定点</button>
+              </div>
+              <div id="assistFixedList" class="chip-list"></div>
+            </div>
+            <div class="subsection">
+              <h4>提醒规则</h4>
+              <div class="form-line">
+                <label>降雨阈值 %
+                  <input id="assistRainThreshold" type="number" min="1" max="100" value="50">
+                </label>
+                <label>降雨突增 %
+                  <input id="assistRainJump" type="number" min="1" max="100" value="30">
+                </label>
+                <label>温差阈值 ℃
+                  <input id="assistTempChange" type="number" min="0.1" step="0.1" value="3">
+                </label>
+                <label class="check-label">
+                  <input id="assistWeatherUpgrade" type="checkbox" checked>天气升级提醒
+                </label>
+                <label class="check-label">
+                  <input id="assistFutureRainUpgrade" type="checkbox" checked>明后天降雨升级
+                </label>
+              </div>
+            </div>
+            <div class="row-actions">
+              <button id="fillAssistFromCurrent">填入当前选择</button>
+              <button id="applyAssistProfile" class="primary">应用到这台电脑</button>
+            </div>
           </div>
         </div>
       </section>
@@ -378,9 +679,12 @@
   </div>
   <script>
     const el = {
+      versionBadge: document.querySelector("#versionBadge"),
+      dashboardCards: document.querySelector("#dashboardCards"),
       locationSelect: document.querySelector("#locationSelect"),
       targetSelect: document.querySelector("#targetSelect"),
       backend: document.querySelector("#backend"),
+      dailyPrefix: document.querySelector("#dailyPrefix"),
       message: document.querySelector("#message"),
       status: document.querySelector("#status"),
       result: document.querySelector("#result"),
@@ -395,24 +699,66 @@
       sourceRisk: document.querySelector("#sourceRisk"),
       recentChecks: document.querySelector("#recentChecks"),
       recentSends: document.querySelector("#recentSends"),
+      weatherHistory: document.querySelector("#weatherHistory"),
       locationQuery: document.querySelector("#locationQuery"),
       locationCandidates: document.querySelector("#locationCandidates"),
       locationList: document.querySelector("#locationList"),
+      locationProvince: document.querySelector("#locationProvince"),
+      locationCity: document.querySelector("#locationCity"),
+      locationDistrict: document.querySelector("#locationDistrict"),
       targetName: document.querySelector("#targetName"),
       targetList: document.querySelector("#targetList"),
       jobSelect: document.querySelector("#jobSelect"),
       jobLocation: document.querySelector("#jobLocation"),
       jobTarget: document.querySelector("#jobTarget"),
       jobInterval: document.querySelector("#jobInterval"),
-      jobFixedTimes: document.querySelector("#jobFixedTimes"),
-      jobQuietStart: document.querySelector("#jobQuietStart"),
-      jobQuietEnd: document.querySelector("#jobQuietEnd"),
+      jobWindowPresets: document.querySelector("#jobWindowPresets"),
+      jobWindowStart: document.querySelector("#jobWindowStart"),
+      jobWindowEnd: document.querySelector("#jobWindowEnd"),
+      jobActiveWindows: document.querySelector("#jobActiveWindows"),
+      jobFixedTime: document.querySelector("#jobFixedTime"),
+      jobFixedList: document.querySelector("#jobFixedList"),
       jobAllowQuiet: document.querySelector("#jobAllowQuiet"),
+      jobRainThreshold: document.querySelector("#jobRainThreshold"),
+      jobRainJump: document.querySelector("#jobRainJump"),
+      jobTempChange: document.querySelector("#jobTempChange"),
+      jobWeatherUpgrade: document.querySelector("#jobWeatherUpgrade"),
+      jobFutureRainUpgrade: document.querySelector("#jobFutureRainUpgrade"),
       jobList: document.querySelector("#jobList"),
-      diagnostics: document.querySelector("#diagnosticsOutput")
+      diagnostics: document.querySelector("#diagnosticsOutput"),
+      assistProvince: document.querySelector("#assistProvince"),
+      assistCity: document.querySelector("#assistCity"),
+      assistDistrict: document.querySelector("#assistDistrict"),
+      assistTarget: document.querySelector("#assistTarget"),
+      assistInterval: document.querySelector("#assistInterval"),
+      assistWindowPresets: document.querySelector("#assistWindowPresets"),
+      assistWindowStart: document.querySelector("#assistWindowStart"),
+      assistWindowEnd: document.querySelector("#assistWindowEnd"),
+      assistActiveWindows: document.querySelector("#assistActiveWindows"),
+      assistFixedTime: document.querySelector("#assistFixedTime"),
+      assistFixedList: document.querySelector("#assistFixedList"),
+      assistAllowQuiet: document.querySelector("#assistAllowQuiet"),
+      assistRainThreshold: document.querySelector("#assistRainThreshold"),
+      assistRainJump: document.querySelector("#assistRainJump"),
+      assistTempChange: document.querySelector("#assistTempChange"),
+      assistWeatherUpgrade: document.querySelector("#assistWeatherUpgrade"),
+      assistFutureRainUpgrade: document.querySelector("#assistFutureRainUpgrade"),
+      setupOverlay: document.querySelector("#setupOverlay"),
+      setupLocationQuery: document.querySelector("#setupLocationQuery"),
+      setupLocationCandidates: document.querySelector("#setupLocationCandidates"),
+      setupProvince: document.querySelector("#setupProvince"),
+      setupCity: document.querySelector("#setupCity"),
+      setupDistrict: document.querySelector("#setupDistrict"),
+      setupTarget: document.querySelector("#setupTarget"),
+      setupOutput: document.querySelector("#setupOutput")
     };
     let appState = null;
     let monitorState = null;
+    let regionsTree = [];
+    let jobEditorWindows = ["07:00-22:00"];
+    let jobEditorFixedTimes = [];
+    let assistWindows = ["07:00-22:00"];
+    let assistFixedTimes = [];
 
     function setStatus(text, kind = "") {
       el.status.textContent = text;
@@ -424,6 +770,25 @@
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || response.statusText);
       return data;
+    }
+
+    async function apiResult(path, options = {}) {
+      const response = await fetch(path, { headers: { "Content-Type": "application/json" }, ...options });
+      return await response.json();
+    }
+
+    function formatResult(data) {
+      const json = JSON.stringify(data, null, 2);
+      const analysis = data && data.error_analysis;
+      if (!analysis) return json;
+      const causes = (analysis.likely_causes || []).map(item => `- ${item}`).join("\n") || "- \u672a\u8bc6\u522b\u5230\u660e\u786e\u539f\u56e0";
+      const steps = (analysis.next_steps || []).map(item => `- ${item}`).join("\n") || "- \u8bf7\u590d\u5236\u5b8c\u6574\u8fd0\u884c\u7ed3\u679c\u7ee7\u7eed\u6392\u67e5";
+      return `\u9519\u8bef\u5206\u6790\n\u7c7b\u578b\uff1a${analysis.title || analysis.category}\n\u8bf4\u660e\uff1a${analysis.summary || "-"}\n\n\u53ef\u80fd\u539f\u56e0\uff1a\n${causes}\n\n\u5efa\u8bae\u64cd\u4f5c\uff1a\n${steps}\n\n\u539f\u59cb\u7ed3\u679c\uff1a\n${json}`;
+    }
+
+    function renderSetupGate() {
+      const complete = !!(appState && appState.app && appState.app.setup_complete);
+      el.setupOverlay.classList.toggle("show", !complete);
     }
 
     function selectedLocationId() {
@@ -449,6 +814,132 @@
       select.appendChild(item);
     }
 
+    function uniqueSortedTimes(values) {
+      return [...new Set((values || []).filter(Boolean))].sort();
+    }
+
+    function addUnique(list, value) {
+      if (!value || list.includes(value)) return list;
+      return [...list, value].sort();
+    }
+
+    function renderChips(container, values, onRemove, emptyText) {
+      container.innerHTML = "";
+      if (!values || !values.length) {
+        container.innerHTML = `<span class="chip">${emptyText}</span>`;
+        return;
+      }
+      values.forEach((value, index) => {
+        const chip = document.createElement("span");
+        chip.className = "chip";
+        chip.innerHTML = `<span>${value}</span><button type="button">删除</button>`;
+        chip.querySelector("button").onclick = () => onRemove(index);
+        container.appendChild(chip);
+      });
+    }
+
+    const regionControls = {
+      setup: () => ({ province: el.setupProvince, city: el.setupCity, district: el.setupDistrict }),
+      location: () => ({ province: el.locationProvince, city: el.locationCity, district: el.locationDistrict }),
+      assist: () => ({ province: el.assistProvince, city: el.assistCity, district: el.assistDistrict })
+    };
+
+    function findRegionSelection(code) {
+      for (const province of regionsTree) {
+        for (const city of province.children || []) {
+          if (city.code === code && !(city.children || []).length) return { province, city, district: city };
+          for (const district of city.children || []) {
+            if (district.code === code) return { province, city, district };
+          }
+        }
+      }
+      const province = regionsTree[0];
+      const city = province && province.children ? province.children[0] : null;
+      const district = city && city.children && city.children.length ? city.children[0] : city;
+      return { province, city, district };
+    }
+
+    function regionPayload(key) {
+      const controls = regionControls[key]();
+      const selected = findRegionSelection(controls.district.value || controls.city.value);
+      if (!selected.district) return null;
+      const path = [selected.province?.name, selected.city?.name, selected.district?.name].filter((value, index, array) => value && array.indexOf(value) === index);
+      return {
+        name: selected.district.name,
+        region_code: selected.district.code,
+        address_path: path,
+        source: "china_regions"
+      };
+    }
+
+    function fillRegionOptions(key, selectedCode) {
+      if (!regionsTree.length) return;
+      const controls = regionControls[key]();
+      let selection = selectedCode ? findRegionSelection(selectedCode) : null;
+      if (!selection) {
+        const province = regionsTree.find(item => item.code === controls.province.value) || regionsTree[0];
+        const city = (province.children || []).find(item => item.code === controls.city.value) || (province.children || [])[0];
+        const district = (city && city.children && city.children.length)
+          ? ((city.children || []).find(item => item.code === controls.district.value) || city.children[0])
+          : city;
+        selection = { province, city, district };
+      }
+      controls.province.innerHTML = "";
+      for (const province of regionsTree) option(controls.province, province.code, province.name, province.code === selection.province?.code);
+      const province = regionsTree.find(item => item.code === controls.province.value) || regionsTree[0];
+      controls.city.innerHTML = "";
+      for (const city of province.children || []) option(controls.city, city.code, city.name, city.code === selection.city?.code);
+      const city = (province.children || []).find(item => item.code === controls.city.value) || (province.children || [])[0];
+      controls.district.innerHTML = "";
+      const districts = city && city.children && city.children.length ? city.children : (city ? [city] : []);
+      for (const district of districts) option(controls.district, district.code, district.name, district.code === selection.district?.code);
+    }
+
+    function bindRegionSelectors(key) {
+      const controls = regionControls[key]();
+      controls.province.addEventListener("change", () => fillRegionOptions(key, ""));
+      controls.city.addEventListener("change", () => {
+        const city = (regionsTree.find(item => item.code === controls.province.value)?.children || []).find(item => item.code === controls.city.value);
+        controls.district.innerHTML = "";
+        const districts = city && city.children && city.children.length ? city.children : (city ? [city] : []);
+        for (const district of districts) option(controls.district, district.code, district.name);
+      });
+    }
+
+    function selectRegion(key, code) {
+      fillRegionOptions(key, code);
+    }
+
+    async function loadRegions() {
+      const data = await api("/api/regions/tree");
+      regionsTree = data.regions || [];
+      for (const key of ["setup", "location", "assist"]) fillRegionOptions(key, "421221");
+    }
+
+    function renderJobTimingControls() {
+      renderChips(el.jobActiveWindows, jobEditorWindows, index => {
+        jobEditorWindows.splice(index, 1);
+        if (!jobEditorWindows.length) jobEditorWindows.push("07:00-22:00");
+        renderJobTimingControls();
+      }, "未设置时使用 07:00-22:00");
+      renderChips(el.jobFixedList, jobEditorFixedTimes, index => {
+        jobEditorFixedTimes.splice(index, 1);
+        renderJobTimingControls();
+      }, "未设置固定发送点");
+    }
+
+    function renderAssistTimingControls() {
+      renderChips(el.assistActiveWindows, assistWindows, index => {
+        assistWindows.splice(index, 1);
+        if (!assistWindows.length) assistWindows.push("07:00-22:00");
+        renderAssistTimingControls();
+      }, "未设置时使用 07:00-22:00");
+      renderChips(el.assistFixedList, assistFixedTimes, index => {
+        assistFixedTimes.splice(index, 1);
+        renderAssistTimingControls();
+      }, "未设置固定发送点");
+    }
+
     function renderEvents(target, items, emptyText) {
       target.innerHTML = "";
       if (!items || !items.length) {
@@ -469,6 +960,38 @@
         div.innerHTML = `<strong>${when}</strong><br>${bits.join(" · ") || "无补发"}`;
         target.appendChild(div);
       }
+    }
+
+    function renderDashboard() {
+      const app = (appState && appState.app) || {};
+      const dash = (appState && appState.dashboard) || {};
+      if (el.versionBadge) el.versionBadge.textContent = `v${app.version || "-"}`;
+      if (!el.dashboardCards) return;
+      const pending = (dash.pending_compensations || []).length;
+      const readinessValue = dash.can_send_now === true ? "可发送" : (dash.can_send_now === false ? "需处理" : "未检查");
+      const powerValue = dash.power_recommended === true ? "适合息屏" : (dash.power_recommended === false ? "需检查" : "未检查");
+      const schedulerValue = dash.scheduler_ok === true ? "正常" : (dash.scheduler_ok === false ? "待修复" : "未检查");
+      const cards = [
+        {
+          value: readinessValue,
+          label: `自动发送环境：${dash.readiness_title || dash.readiness_status || "-"}`
+        },
+        {
+          value: powerValue,
+          label: "关闭屏幕后仍需保持电脑不睡眠"
+        },
+        {
+          value: schedulerValue,
+          label: `后台任务：${dash.monitor_running ? "运行中" : "未运行"}`
+        },
+        {
+          value: dash.next_fixed_send_at ? dash.next_fixed_send_at.replace("T", " ") : "未设置",
+          label: pending ? `待补偿固定发送 ${pending} 条` : "下一次完整天气日报"
+        }
+      ];
+      el.dashboardCards.innerHTML = cards.map(item => (
+        `<div class="dash-card"><strong>${item.value}</strong><span>${item.label}</span></div>`
+      )).join("");
     }
 
     function renderMonitor() {
@@ -493,6 +1016,11 @@
       el.defaultTarget.textContent = defaultTarget ? defaultTarget.name : "-";
       el.defaultJob.textContent = appState.defaults.job_id;
       el.backend.value = appState.monitor.backend || "pywinauto-session";
+      if (defaultLocation && defaultLocation.region_code) {
+        selectRegion("location", defaultLocation.region_code);
+        selectRegion("assist", defaultLocation.region_code);
+        selectRegion("setup", defaultLocation.region_code);
+      }
 
       for (const select of [el.locationSelect, el.jobLocation]) select.innerHTML = "";
       for (const item of appState.locations) {
@@ -521,7 +1049,8 @@
       for (const item of appState.locations) {
         const row = document.createElement("div");
         row.className = "item-row";
-        row.innerHTML = `<div><strong>${item.name}${item.default ? " · 默认" : ""}</strong><span>${item.latitude}, ${item.longitude} · ${item.source}</span></div>`;
+        const path = (item.address_path && item.address_path.length) ? item.address_path.join(" / ") : item.name;
+        row.innerHTML = `<div><strong>${item.name}${item.default ? " · 默认" : ""}</strong><span>${path} · ${item.source || "china_regions"}</span></div>`;
         const actions = document.createElement("div");
         actions.className = "row-actions";
         actions.innerHTML = `<button data-action="rename">重命名</button><button data-action="default">设默认</button><button class="danger" data-action="delete">删除</button>`;
@@ -557,10 +1086,16 @@
       el.jobLocation.value = job.location_id;
       el.jobTarget.value = job.wechat_target_id;
       el.jobInterval.value = job.interval_minutes;
-      el.jobFixedTimes.value = (job.fixed_times || []).join(",");
-      el.jobQuietStart.value = job.quiet_start;
-      el.jobQuietEnd.value = job.quiet_end;
+      jobEditorWindows = [...(job.active_windows || ["07:00-22:00"])];
+      jobEditorFixedTimes = uniqueSortedTimes(job.fixed_times || []);
       el.jobAllowQuiet.checked = !!job.allow_quiet_send;
+      const options = job.alert_options || {};
+      el.jobRainThreshold.value = options.rain_threshold_percent ?? 50;
+      el.jobRainJump.value = options.rain_jump_percent ?? 30;
+      el.jobTempChange.value = options.temp_change_celsius ?? 3;
+      el.jobWeatherUpgrade.checked = options.weather_upgrade_enabled !== false;
+      el.jobFutureRainUpgrade.checked = options.future_rain_upgrade_enabled !== false;
+      renderJobTimingControls();
     }
 
     function renderJobList() {
@@ -570,7 +1105,8 @@
         const target = appState.wechat_targets.find(item => item.id === job.wechat_target_id);
         const row = document.createElement("div");
         row.className = "item-row";
-        row.innerHTML = `<div><strong>${loc ? loc.name : job.location_id} -> ${target ? target.name : job.wechat_target_id}</strong><span>${job.interval_minutes} 分钟 · 固定 ${job.fixed_times.length ? job.fixed_times.join(", ") : "未设置"} · ${job.quiet_start}-${job.quiet_end}</span></div>`;
+        const windows = (job.active_windows || []).join(", ") || "未设置";
+        row.innerHTML = `<div><strong>${loc ? loc.name : job.location_id} -> ${target ? target.name : job.wechat_target_id}</strong><span>${job.interval_minutes} 分钟 · 运行 ${windows} · 固定 ${job.fixed_times.length ? job.fixed_times.join(", ") : "未设置"}</span></div>`;
         const actions = document.createElement("div");
         actions.className = "row-actions";
         actions.innerHTML = `<button data-action="select">编辑</button>`;
@@ -585,25 +1121,76 @@
 
     async function loadState() {
       appState = await api("/api/state");
+      el.dailyPrefix.value = (appState.message && appState.message.daily_prefix) || "";
+      renderDashboard();
       renderManagers();
+      renderSetupGate();
     }
 
     async function refreshPreview() {
       setStatus("正在刷新天气预览...");
       const data = await api(`/api/preview?location_id=${encodeURIComponent(selectedLocationId())}&wechat_target_id=${encodeURIComponent(selectedTargetId())}`);
       el.message.value = data.message;
-      setStatus("预览已更新。", "ok");
+      if (data.weather_status) {
+        el.providerCount.textContent = data.weather_status.source_count ? `${data.weather_status.source_count} 源` : "-";
+        el.sourceRisk.textContent = data.weather_status.stale ? "缓存预报" : (data.weather_status.source_disagreement ? "有分歧" : "已更新");
+        if (!data.weather_status.ok || data.weather_status.failures?.length) {
+          el.result.textContent = JSON.stringify(data.weather_status, null, 2);
+        }
+      }
+      setStatus(data.weather_status && !data.weather_status.ok ? "天气加载失败，查看运行结果。" : "预览已更新。", data.weather_status && !data.weather_status.ok ? "bad" : "ok");
+      await refreshWeatherHistory();
     }
 
     async function sendWeather() {
+      if (appState && appState.app && !appState.app.setup_complete) {
+        setStatus("请先完成首次设置，再发送真实微信消息。", "warn");
+        return;
+      }
       setStatus("正在发送到微信...");
-      const data = await api("/api/send-weather", {
+      const data = await apiResult("/api/send-weather", {
         method: "POST",
         body: JSON.stringify({ location_id: selectedLocationId(), wechat_target_id: selectedTargetId(), backend: el.backend.value, real: true })
       });
-      el.result.textContent = JSON.stringify(data, null, 2);
+      el.result.textContent = formatResult(data);
       setStatus(data.ok ? "发送完成。" : "发送失败，查看运行结果。", data.ok ? "ok" : "bad");
       if (data.preview) el.message.value = data.preview;
+      await refreshMonitor();
+      await refreshWeatherHistory();
+    }
+
+    async function saveMessageSettings() {
+      const data = await api("/api/message", {
+        method: "POST",
+        body: JSON.stringify({
+          daily_style: "segmented_brief",
+          daily_prefix: el.dailyPrefix.value.trim()
+        })
+      });
+      if (appState) appState.message = data.message;
+      await refreshPreview();
+      setStatus("发送前缀已保存。", "ok");
+    }
+
+    async function openTarget() {
+      setStatus("正在打开并校验微信会话...");
+      const data = await apiResult("/api/wechat/open-target", {
+        method: "POST",
+        body: JSON.stringify({ wechat_target_id: selectedTargetId() })
+      });
+      el.result.textContent = formatResult(data);
+      setStatus(data.ok ? "目标会话已打开，未发送消息。" : "目标会话打开失败。", data.ok ? "ok" : "bad");
+    }
+
+    async function sendTestMessage() {
+      if (!window.confirm("会真实发送一条测试消息到当前选择的微信好友/群。")) return;
+      setStatus("正在发送测试消息...");
+      const data = await apiResult("/api/wechat/test-message", {
+        method: "POST",
+        body: JSON.stringify({ wechat_target_id: selectedTargetId(), backend: el.backend.value })
+      });
+      el.result.textContent = formatResult(data);
+      setStatus(data.ok ? "测试消息已发送。" : "测试消息发送失败。", data.ok ? "ok" : "bad");
       await refreshMonitor();
     }
 
@@ -612,27 +1199,47 @@
       renderMonitor();
     }
 
+    async function refreshWeatherHistory() {
+      const data = await api("/api/weather/history?limit=10");
+      el.weatherHistory.innerHTML = "";
+      const rows = data.history || [];
+      if (!rows.length) {
+        el.weatherHistory.innerHTML = `<div class="event">还没有天气查询记录。</div>`;
+        return;
+      }
+      for (const item of rows) {
+        const row = document.createElement("div");
+        row.className = "event";
+        const status = item.status === "ok" ? "成功" : (item.status === "cache" ? "缓存" : "失败");
+        const failures = (item.failures || []).length ? ` · 失败源 ${item.failures.length}` : "";
+        const disagreement = item.source_disagreement ? " · 多源分歧" : "";
+        row.innerHTML = `<strong>${item.fetched_at || "-"}</strong> ${item.address || "-"} · ${status} · ${item.source_count || 0} 源 · ${item.elapsed_ms || "-"} ms${failures}${disagreement}<br>${item.error || (item.sources || []).join(", ")}`;
+        el.weatherHistory.appendChild(row);
+      }
+    }
+
     async function checkMonitor() {
       setStatus("正在执行 dry-run 检查...");
       const data = await api("/api/monitor/check", {
         method: "POST",
         body: JSON.stringify({ dry_run: true, job_id: matchingJobId() })
       });
-      el.result.textContent = JSON.stringify(data, null, 2);
+      el.result.textContent = formatResult(data);
       setStatus("dry-run 检查完成，没有发送微信。", "ok");
       await refreshMonitor();
+      await refreshWeatherHistory();
     }
 
     async function searchLocation() {
       const query = el.locationQuery.value.trim();
       if (!query) return;
       setStatus("正在搜索地址...");
-      const data = await api(`/api/locations/search?query=${encodeURIComponent(query)}`);
+      const data = await api(`/api/regions/search?query=${encodeURIComponent(query)}`);
       el.locationCandidates.innerHTML = "";
       for (const item of data.results) {
         const row = document.createElement("div");
         row.className = "item-row";
-        row.innerHTML = `<div><strong>${item.name}</strong><span>${item.latitude}, ${item.longitude}</span></div>`;
+        row.innerHTML = `<div><strong>${item.name}</strong><span>${item.display_name}</span></div>`;
         const actions = document.createElement("div");
         actions.className = "row-actions";
         actions.innerHTML = `<button>保存</button>`;
@@ -643,8 +1250,20 @@
       setStatus(`找到 ${data.results.length} 个地址候选。`, "ok");
     }
 
+    async function saveSelectedLocation() {
+      const payload = regionPayload("location");
+      if (!payload) {
+        setStatus("请先选择省/市/区县。", "warn");
+        return;
+      }
+      await addLocation(payload);
+    }
+
     async function addLocation(item) {
-      await api("/api/locations", { method: "POST", body: JSON.stringify(item) });
+      await api("/api/locations", {
+        method: "POST",
+        body: JSON.stringify({ ...item, region_code: item.region_code || item.code, source: item.source || "china_regions" })
+      });
       await loadState();
       await refreshPreview();
       await refreshMonitor();
@@ -670,28 +1289,71 @@
       if (name) await patchLocation({ id: item.id, name });
     }
 
-    async function browserLocation() {
-      if (!navigator.geolocation) {
-        await detectIpLocation();
-        return;
-      }
-      navigator.geolocation.getCurrentPosition(async position => {
-        const name = window.prompt("地址名称", "当前位置") || "当前位置";
-        await addLocation({
-          name,
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
-          source: "browser"
-        });
-      }, async () => {
-        await detectIpLocation();
-      }, { enableHighAccuracy: true, timeout: 10000 });
+    function fillSetupLocation(item) {
+      selectRegion("setup", item.region_code || item.code);
+      el.setupOutput.textContent = JSON.stringify(item, null, 2);
     }
 
-    async function detectIpLocation() {
-      setStatus("正在使用 IP 定位...");
-      const data = await api("/api/locations/detect-ip", { method: "POST", body: "{}" });
-      await addLocation(data.location);
+    async function setupSearchLocation() {
+      const query = el.setupLocationQuery.value.trim();
+      if (!query) return;
+      el.setupOutput.textContent = "搜索地址中...";
+      const data = await api(`/api/regions/search?query=${encodeURIComponent(query)}`);
+      el.setupLocationCandidates.innerHTML = "";
+      for (const item of data.results) {
+        const row = document.createElement("div");
+        row.className = "item-row";
+        row.innerHTML = `<div><strong>${item.name}</strong><span>${item.display_name}</span></div>`;
+        const actions = document.createElement("div");
+        actions.className = "row-actions";
+        actions.innerHTML = `<button>选用</button>`;
+        actions.querySelector("button").onclick = () => fillSetupLocation(item);
+        row.appendChild(actions);
+        el.setupLocationCandidates.appendChild(row);
+      }
+      el.setupOutput.textContent = `找到 ${data.results.length} 个地址候选。`;
+    }
+
+    async function setupOpenTarget(contact) {
+      const target = (contact || el.setupTarget.value).trim();
+      if (!target) return;
+      el.setupOutput.textContent = "正在打开微信会话，未发送消息...";
+      const data = await apiResult("/api/wechat/open-target", {
+        method: "POST",
+        body: JSON.stringify({ contact: target })
+      });
+      el.setupOutput.textContent = formatResult(data);
+    }
+
+    async function setupSendTestMessage(contact) {
+      const target = (contact || el.setupTarget.value).trim();
+      if (!target) return;
+      if (!window.confirm(`会真实发送一条测试消息到「${target}」。`)) return;
+      el.setupOutput.textContent = "正在发送测试消息...";
+      const data = await apiResult("/api/wechat/test-message", {
+        method: "POST",
+        body: JSON.stringify({ contact: target, backend: "pywinauto-session" })
+      });
+      el.setupOutput.textContent = formatResult(data);
+    }
+
+    async function completeSetup() {
+      const location = regionPayload("setup");
+      if (!location) {
+        el.setupOutput.textContent = "请先选择省/市/区县。";
+        return;
+      }
+      const payload = {
+        location: { ...location, source: "setup" },
+        wechat_target: el.setupTarget.value.trim()
+      };
+      el.setupOutput.textContent = "保存首次设置中...";
+      const data = await api("/api/setup/complete", { method: "POST", body: JSON.stringify(payload) });
+      el.setupOutput.textContent = formatResult(data);
+      await loadState();
+      await refreshPreview();
+      await refreshMonitor();
+      setStatus("首次设置已完成。", "ok");
     }
 
     async function addTarget() {
@@ -728,10 +1390,16 @@
         location_id: el.jobLocation.value,
         wechat_target_id: el.jobTarget.value,
         interval_minutes: Number(el.jobInterval.value || 120),
-        fixed_times: el.jobFixedTimes.value,
-        quiet_start: el.jobQuietStart.value || "22:00",
-        quiet_end: el.jobQuietEnd.value || "07:00",
+        fixed_times: jobEditorFixedTimes,
+        active_windows: jobEditorWindows,
         allow_quiet_send: el.jobAllowQuiet.checked,
+        alert_options: {
+          rain_threshold_percent: Number(el.jobRainThreshold.value || 50),
+          rain_jump_percent: Number(el.jobRainJump.value || 30),
+          temp_change_celsius: Number(el.jobTempChange.value || 3),
+          weather_upgrade_enabled: el.jobWeatherUpgrade.checked,
+          future_rain_upgrade_enabled: el.jobFutureRainUpgrade.checked
+        },
         enabled: true
       };
       if (includeId) body.id = el.jobSelect.value;
@@ -759,6 +1427,117 @@
       setStatus("自动化任务已删除。", "ok");
     }
 
+
+    function formatCompatReport(data) {
+      const checks = (data.checks || []).map(item => {
+        const mark = item.ok ? "OK" : (item.severity === "error" ? "ERROR" : "WARN");
+        return `[${mark}] ${item.title}\n${item.detail || "-"}\n${item.ok ? "" : ("处理建议：" + (item.fix || "请查看诊断详情"))}`;
+      }).join("\n\n");
+      return `兼容性自检：${data.status || "-"}\n生成时间：${data.generated_at || "-"}\n\n${checks}`;
+    }
+
+    function fillAssistFromCurrent() {
+      const location = appState.locations.find(item => item.id === selectedLocationId());
+      const target = appState.wechat_targets.find(item => item.id === selectedTargetId());
+      const job = appState.automation_jobs.find(item => item.id === matchingJobId()) || {};
+      if (location) {
+        selectRegion("assist", location.region_code || "421221");
+      }
+      if (target) el.assistTarget.value = target.name || "";
+      el.assistInterval.value = job.interval_minutes || 120;
+      assistWindows = [...(job.active_windows || ["07:00-22:00"])];
+      assistFixedTimes = uniqueSortedTimes(job.fixed_times || []);
+      el.assistAllowQuiet.checked = !!job.allow_quiet_send;
+      const options = job.alert_options || {};
+      el.assistRainThreshold.value = options.rain_threshold_percent ?? 50;
+      el.assistRainJump.value = options.rain_jump_percent ?? 30;
+      el.assistTempChange.value = options.temp_change_celsius ?? 3;
+      el.assistWeatherUpgrade.checked = options.weather_upgrade_enabled !== false;
+      el.assistFutureRainUpgrade.checked = options.future_rain_upgrade_enabled !== false;
+      renderAssistTimingControls();
+      setStatus("已填入当前配置，可核对后应用到这台电脑。", "ok");
+    }
+
+    async function applyAssistProfile() {
+      const location = regionPayload("assist");
+      const payload = {
+        location: location ? { ...location, source: "assisted-profile" } : null,
+        wechat_target: { name: el.assistTarget.value.trim() },
+        automation: {
+          interval_minutes: Number(el.assistInterval.value || 120),
+          fixed_times: assistFixedTimes,
+          active_windows: assistWindows,
+          allow_quiet_send: el.assistAllowQuiet.checked,
+          alert_options: {
+            rain_threshold_percent: Number(el.assistRainThreshold.value || 50),
+            rain_jump_percent: Number(el.assistRainJump.value || 30),
+            temp_change_celsius: Number(el.assistTempChange.value || 3),
+            weather_upgrade_enabled: el.assistWeatherUpgrade.checked,
+            future_rain_upgrade_enabled: el.assistFutureRainUpgrade.checked
+          }
+        }
+      };
+      if (!payload.location || !payload.location.name || !payload.wechat_target.name) {
+        setStatus("请选好省/市/区县并填写微信好友/群名称。", "warn");
+        return;
+      }
+      const data = await apiResult("/api/setup/apply-profile", { method: "POST", body: JSON.stringify(payload) });
+      el.result.textContent = formatResult(data);
+      await loadState();
+      await refreshPreview();
+      await refreshMonitor();
+      setStatus("已应用一键配置。建议先做打开会话测试和发送测试消息。", "ok");
+    }
+
+    async function runCompatCheck() {
+      setStatus("正在执行兼容性自检...");
+      const data = await api("/api/compat/check");
+      el.diagnostics.textContent = formatCompatReport(data);
+      setStatus(data.ok ? "兼容性自检通过。" : "兼容性自检发现问题。", data.ok ? "ok" : "warn");
+    }
+
+    async function runReadinessCheck() {
+      setStatus("正在检查自动发送环境...");
+      const data = await api("/api/readiness");
+      el.diagnostics.textContent = formatResult(data);
+      setStatus(data.can_send_now ? "当前可以自动发送微信。" : "当前环境不可自动发送，查看诊断详情。", data.can_send_now ? "ok" : "warn");
+    }
+
+    async function runPowerStatus() {
+      setStatus("正在检查息屏/睡眠设置...");
+      const data = await api("/api/power/status");
+      el.diagnostics.textContent = formatResult(data);
+      setStatus(data.recommended ? "省电运行设置符合推荐。" : "建议设置为关闭屏幕但不睡眠。", data.recommended ? "ok" : "warn");
+    }
+
+    async function runSchedulerStatus() {
+      setStatus("正在检查定时任务...");
+      const data = await api("/api/scheduler/status");
+      el.diagnostics.textContent = formatResult(data);
+      setStatus(data.ok ? "定时任务存在。" : "定时任务需要修复或创建。", data.ok ? "ok" : "warn");
+    }
+
+    async function exportDiagnostics() {
+      setStatus("正在导出诊断包...");
+      const data = await apiResult("/api/diagnostics/export", { method: "POST", body: "{}" });
+      el.result.textContent = formatResult(data);
+      setStatus(data.ok ? `诊断包已导出：${data.path}` : "诊断包导出失败。", data.ok ? "ok" : "bad");
+    }
+
+    async function exportMigration() {
+      setStatus("正在生成迁移包...");
+      const data = await apiResult("/api/migration/export", { method: "POST", body: "{}" });
+      el.result.textContent = formatResult(data);
+      setStatus(data.ok ? `迁移包已导出：${data.path}` : "迁移包导出失败。", data.ok ? "ok" : "bad");
+    }
+
+    async function checkUpdate() {
+      setStatus("正在检查 GitHub 最新版本...");
+      const data = await api("/api/update/check");
+      el.result.textContent = formatResult(data);
+      setStatus(data.has_update ? `发现新版本 ${data.latest_version}。` : "当前版本已是最新或未发现更新。", data.has_update ? "warn" : "ok");
+    }
+
     async function refreshDiagnostics() {
       el.diagnostics.textContent = "读取中...";
       const data = await api("/api/diagnostics");
@@ -766,23 +1545,76 @@
     }
 
     document.querySelector("#refresh").addEventListener("click", () => refreshPreview().catch(error => setStatus(error.message, "bad")));
+    document.querySelector("#saveMessageSettings").addEventListener("click", () => saveMessageSettings().catch(error => setStatus(error.message, "bad")));
     document.querySelector("#send").addEventListener("click", () => sendWeather().catch(error => setStatus(error.message, "bad")));
     document.querySelector("#check").addEventListener("click", () => checkMonitor().catch(error => setStatus(error.message, "bad")));
+    document.querySelector("#openTarget").addEventListener("click", () => openTarget().catch(error => setStatus(error.message, "bad")));
+    document.querySelector("#sendTestMessage").addEventListener("click", () => sendTestMessage().catch(error => setStatus(error.message, "bad")));
     document.querySelector("#searchLocation").addEventListener("click", () => searchLocation().catch(error => setStatus(error.message, "bad")));
-    document.querySelector("#browserLocation").addEventListener("click", () => browserLocation().catch(error => setStatus(error.message, "bad")));
-    document.querySelector("#ipLocation").addEventListener("click", () => detectIpLocation().catch(error => setStatus(error.message, "bad")));
+    document.querySelector("#saveSelectedLocation").addEventListener("click", () => saveSelectedLocation().catch(error => setStatus(error.message, "bad")));
+    document.querySelector("#refreshWeatherHistory").addEventListener("click", () => refreshWeatherHistory().catch(error => setStatus(error.message, "bad")));
     document.querySelector("#addTarget").addEventListener("click", () => addTarget().catch(error => setStatus(error.message, "bad")));
     document.querySelector("#saveJob").addEventListener("click", () => saveJob().catch(error => setStatus(error.message, "bad")));
     document.querySelector("#addJob").addEventListener("click", () => addJob().catch(error => setStatus(error.message, "bad")));
     document.querySelector("#deleteJob").addEventListener("click", () => deleteJob().catch(error => setStatus(error.message, "bad")));
+    document.querySelector("#addJobWindow").addEventListener("click", () => {
+      jobEditorWindows = addUnique(jobEditorWindows, `${el.jobWindowStart.value}-${el.jobWindowEnd.value}`);
+      renderJobTimingControls();
+    });
+    document.querySelector("#addJobFixedTime").addEventListener("click", () => {
+      jobEditorFixedTimes = addUnique(jobEditorFixedTimes, el.jobFixedTime.value);
+      renderJobTimingControls();
+    });
+    el.jobWindowPresets.addEventListener("click", event => {
+      const value = event.target && event.target.dataset ? event.target.dataset.window : "";
+      if (value) {
+        jobEditorWindows = value === "00:00-24:00" ? [value] : addUnique(jobEditorWindows.filter(item => item !== "00:00-24:00"), value);
+        renderJobTimingControls();
+      }
+    });
     document.querySelector("#diagnostics").addEventListener("click", () => refreshDiagnostics().catch(error => setStatus(error.message, "bad")));
+    document.querySelector("#compatCheck").addEventListener("click", () => runCompatCheck().catch(error => setStatus(error.message, "bad")));
+    document.querySelector("#readinessCheck").addEventListener("click", () => runReadinessCheck().catch(error => setStatus(error.message, "bad")));
+    document.querySelector("#powerStatus").addEventListener("click", () => runPowerStatus().catch(error => setStatus(error.message, "bad")));
+    document.querySelector("#schedulerStatus").addEventListener("click", () => runSchedulerStatus().catch(error => setStatus(error.message, "bad")));
+    document.querySelector("#checkUpdate").addEventListener("click", () => checkUpdate().catch(error => setStatus(error.message, "bad")));
+    document.querySelector("#exportMigration").addEventListener("click", () => exportMigration().catch(error => setStatus(error.message, "bad")));
+    document.querySelector("#exportDiagnostics").addEventListener("click", () => exportDiagnostics().catch(error => setStatus(error.message, "bad")));
+    document.querySelector("#fillAssistFromCurrent").addEventListener("click", () => fillAssistFromCurrent());
+    document.querySelector("#applyAssistProfile").addEventListener("click", () => applyAssistProfile().catch(error => setStatus(error.message, "bad")));
+    document.querySelector("#addAssistWindow").addEventListener("click", () => {
+      assistWindows = addUnique(assistWindows, `${el.assistWindowStart.value}-${el.assistWindowEnd.value}`);
+      renderAssistTimingControls();
+    });
+    document.querySelector("#addAssistFixedTime").addEventListener("click", () => {
+      assistFixedTimes = addUnique(assistFixedTimes, el.assistFixedTime.value);
+      renderAssistTimingControls();
+    });
+    el.assistWindowPresets.addEventListener("click", event => {
+      const value = event.target && event.target.dataset ? event.target.dataset.window : "";
+      if (value) {
+        assistWindows = value === "00:00-24:00" ? [value] : addUnique(assistWindows.filter(item => item !== "00:00-24:00"), value);
+        renderAssistTimingControls();
+      }
+    });
+    document.querySelector("#setupSearchLocation").addEventListener("click", () => setupSearchLocation().catch(error => { el.setupOutput.textContent = error.message; }));
+    document.querySelector("#setupTestTarget").addEventListener("click", () => setupOpenTarget().catch(error => { el.setupOutput.textContent = error.message; }));
+    document.querySelector("#setupTestFileTransfer").addEventListener("click", () => setupOpenTarget("文件传输助手").catch(error => { el.setupOutput.textContent = error.message; }));
+    document.querySelector("#setupSendTestTarget").addEventListener("click", () => setupSendTestMessage().catch(error => { el.setupOutput.textContent = error.message; }));
+    document.querySelector("#setupSendTestFileTransfer").addEventListener("click", () => setupSendTestMessage("文件传输助手").catch(error => { el.setupOutput.textContent = error.message; }));
+    document.querySelector("#setupComplete").addEventListener("click", () => completeSetup().catch(error => { el.setupOutput.textContent = error.message; }));
     el.locationSelect.addEventListener("change", () => refreshPreview().then(refreshMonitor).catch(error => setStatus(error.message, "bad")));
     el.targetSelect.addEventListener("change", () => refreshPreview().then(refreshMonitor).catch(error => setStatus(error.message, "bad")));
     el.jobSelect.addEventListener("change", renderJobEditor);
 
-    loadState()
+    for (const key of ["setup", "location", "assist"]) bindRegionSelectors(key);
+    renderAssistTimingControls();
+    renderJobTimingControls();
+    loadRegions()
+      .then(loadState)
       .then(refreshPreview)
       .then(refreshMonitor)
+      .then(refreshWeatherHistory)
       .then(refreshDiagnostics)
       .catch(error => setStatus(error.message, "bad"));
     setInterval(() => refreshMonitor().catch(() => {}), 30000);

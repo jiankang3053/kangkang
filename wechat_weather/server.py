@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
@@ -12,10 +13,38 @@ from urllib.parse import parse_qs, urlparse
 
 import requests
 
-from .config import load_config, read_config_data, write_config_data, normalize_fixed_times
+from .config import (
+    active_windows_from_quiet,
+    load_config,
+    normalize_active_windows,
+    normalize_alert_options,
+    normalize_fixed_times,
+    read_config_data,
+    write_config_data,
+)
+from .compat import build_compat_report, export_diagnostics_package
+from .error_analysis import analyze_error
 from .monitor import WeatherMonitor
-from .weather import build_weather_message
-from .wechat import choose_sender, collect_diagnostics
+from .power import apply_ac_power_profile, get_power_status
+from .readiness import check_readiness
+from .regions import (
+    find_region,
+    normalize_region_payload,
+    regions_tree,
+    resolve_region_coordinates,
+    search_regions,
+)
+from .scheduler import remove_scheduler_tasks, repair_scheduler_tasks, scheduler_status
+from .migration import export_migration_package, inspect_migration_package
+from .run_trace import append_step, new_run_id, read_runs, read_steps
+from .updater import check_latest_release
+from .weather import (
+    build_weather_message_from_snapshot,
+    build_weather_snapshot,
+    read_weather_history,
+    weather_status_from_snapshot,
+)
+from .wechat import DEFAULT_TEST_MESSAGE, SendResult, choose_sender, collect_diagnostics, open_target_chat
 
 
 INDEX_HTML = """<!doctype html>
@@ -219,6 +248,10 @@ INDEX_HTML = """<!doctype html>
               <option value="wxauto">wxauto</option>
             </select>
           </label>
+          <label>发送前缀
+            <input id="dailyPrefix" placeholder="例如：早上好，今天出门前看一下天气：">
+          </label>
+          <button id="saveMessageSettings">保存前缀</button>
           <button id="refresh">刷新预览</button>
           <button class="primary" id="send">发送天气</button>
         </div>
@@ -252,6 +285,7 @@ INDEX_HTML = """<!doctype html>
     const state = {
       contact: document.querySelector("#contact"),
       backend: document.querySelector("#backend"),
+      dailyPrefix: document.querySelector("#dailyPrefix"),
       message: document.querySelector("#message"),
       status: document.querySelector("#status"),
       result: document.querySelector("#result"),
@@ -279,6 +313,7 @@ INDEX_HTML = """<!doctype html>
       const data = await api("/api/state");
       state.contact.value = data.contact;
       state.defaultContact.textContent = data.contact;
+      state.dailyPrefix.value = data.message?.daily_prefix || "";
     }
 
     async function refreshPreview() {
@@ -303,6 +338,18 @@ INDEX_HTML = """<!doctype html>
       if (data.preview) state.message.value = data.preview;
     }
 
+    async function saveMessageSettings() {
+      await api("/api/message", {
+        method: "POST",
+        body: JSON.stringify({
+          daily_style: "segmented_brief",
+          daily_prefix: state.dailyPrefix.value.trim()
+        })
+      });
+      await refreshPreview();
+      setStatus("发送前缀已保存。", "ok");
+    }
+
     async function refreshDiagnostics() {
       state.diagnostics.textContent = "读取中...";
       const data = await api("/api/diagnostics");
@@ -325,6 +372,7 @@ INDEX_HTML = """<!doctype html>
     }
 
     document.querySelector("#refresh").addEventListener("click", refreshPreview);
+    document.querySelector("#saveMessageSettings").addEventListener("click", saveMessageSettings);
     document.querySelector("#send").addEventListener("click", sendWeather);
     document.querySelector("#diagnostics").addEventListener("click", refreshDiagnostics);
     document.querySelector("#monitorCheck").addEventListener("click", checkMonitor);
@@ -437,6 +485,36 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
         for item in items:
             item["default"] = item.get("id") == item_id
 
+    def _location_from_body(self, body: dict[str, Any], existing: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = dict(existing or {})
+        payload.update({key: value for key, value in body.items() if value is not None})
+        if existing and not any(
+            key in body for key in ("name", "region_code", "address_path", "latitude", "longitude", "source")
+        ):
+            return payload
+        if existing and "name" in body and not any(
+            key in body for key in ("region_code", "address_path", "latitude", "longitude")
+        ):
+            payload["name"] = str(body.get("name") or existing.get("name") or "").strip()
+            payload.setdefault("address_path", [payload["name"]])
+            payload.setdefault("region_code", "")
+            return payload
+        has_coordinates = payload.get("latitude") is not None and payload.get("longitude") is not None
+        if payload.get("region_code") or payload.get("address_path") or not has_coordinates:
+            resolved = resolve_region_coordinates(payload)
+            payload["name"] = resolved["name"]
+            payload["latitude"] = resolved["latitude"]
+            payload["longitude"] = resolved["longitude"]
+            payload["region_code"] = resolved["region_code"]
+            payload["address_path"] = resolved["address_path"]
+            payload["source"] = str(body.get("source") or resolved.get("geocode_source") or payload.get("source") or "china_regions")
+            return payload
+        normalized = normalize_region_payload(payload)
+        payload["name"] = str(payload.get("name") or normalized["name"]).strip()
+        payload["region_code"] = normalized.get("region_code") or str(payload.get("region_code") or "")
+        payload["address_path"] = normalized.get("address_path") or list(payload.get("address_path") or [payload["name"]])
+        return payload
+
     def _upsert_location(self, body: dict[str, Any], item_id: str | None = None) -> dict[str, Any]:
         data = self._load_config_data_for_write()
         locations = data.setdefault("locations", [])
@@ -449,14 +527,13 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
             item = next((entry for entry in locations if entry.get("id") == item_id), None)
             if item is None:
                 raise KeyError(f"没有找到天气地址：{item_id}")
-        if "name" in body:
-            item["name"] = str(body["name"]).strip()
-        if "latitude" in body:
-            item["latitude"] = float(body["latitude"])
-        if "longitude" in body:
-            item["longitude"] = float(body["longitude"])
-        if "source" in body:
-            item["source"] = str(body["source"])
+        location_payload = self._location_from_body(body, existing=item)
+        item["name"] = str(location_payload.get("name") or "未命名地址").strip()
+        item["latitude"] = float(location_payload.get("latitude", 0.0))
+        item["longitude"] = float(location_payload.get("longitude", 0.0))
+        item["region_code"] = str(location_payload.get("region_code") or "")
+        item["address_path"] = list(location_payload.get("address_path") or [item["name"]])
+        item["source"] = str(location_payload.get("source") or "manual")
         if "enabled" in body:
             item["enabled"] = _bool_value(body, "enabled", True)
         else:
@@ -464,6 +541,8 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
         item.setdefault("name", "未命名地址")
         item.setdefault("latitude", 0.0)
         item.setdefault("longitude", 0.0)
+        item.setdefault("region_code", "")
+        item.setdefault("address_path", [item["name"]])
         item.setdefault("source", "manual")
         item.setdefault("default", False)
         if _bool_value(body, "default", False) or len(locations) == 1:
@@ -577,6 +656,20 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
             item["allow_quiet_send"] = _bool_value(body, "allow_quiet_send", False)
         else:
             item.setdefault("allow_quiet_send", False)
+        if "active_windows" in body:
+            item["active_windows"] = normalize_active_windows(body["active_windows"], strict=True)
+        elif any(key in body for key in ("quiet_start", "quiet_end", "allow_quiet_send")):
+            item["active_windows"] = active_windows_from_quiet(
+                item.get("quiet_start"),
+                item.get("quiet_end"),
+                bool(item.get("allow_quiet_send", False)),
+            )
+        else:
+            item.setdefault("active_windows", active_windows_from_quiet(item.get("quiet_start"), item.get("quiet_end"), bool(item.get("allow_quiet_send", False))))
+        if "alert_options" in body:
+            item["alert_options"] = normalize_alert_options(body.get("alert_options"))
+        else:
+            item.setdefault("alert_options", normalize_alert_options(item.get("alert_options")))
         self._save_config_data(data)
         return item
 
@@ -591,6 +684,276 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
         data["automation_jobs"] = [item for item in jobs if item.get("id") != item_id]
         self._save_config_data(data)
         return removed
+
+    def _save_message_config(self, body: dict[str, Any]) -> dict[str, Any]:
+        data = self._load_config_data_for_write()
+        message = data.setdefault("message", {})
+        if "daily_style" in body:
+            message["daily_style"] = str(body.get("daily_style") or "segmented_brief")
+        else:
+            message.setdefault("daily_style", "segmented_brief")
+        if "daily_prefix" in body:
+            message["daily_prefix"] = str(body.get("daily_prefix") or "").strip()
+        else:
+            message.setdefault("daily_prefix", "")
+        self._save_config_data(data)
+        return asdict(self.server.app_config.message)
+
+    def _complete_setup(self, body: dict[str, Any]) -> dict[str, Any]:
+        location = body.get("location") or {}
+        target_value = body.get("wechat_target") or body.get("target") or ""
+        if isinstance(target_value, dict):
+            target_value = target_value.get("name") or ""
+        target_name = str(target_value).strip()
+        if not target_name:
+            raise ValueError("请先填写微信好友或群名称。")
+        resolved_location = self._location_from_body(
+            {
+                **location,
+                "name": location.get("name") or body.get("location_name"),
+                "latitude": location.get("latitude", body.get("latitude")),
+                "longitude": location.get("longitude", body.get("longitude")),
+                "source": location.get("source") or "setup",
+            }
+        )
+
+        data = self._load_config_data_for_write()
+        data.setdefault("app", {})["setup_complete"] = True
+        data["locations"] = [
+            {
+                "id": "default-location",
+                "name": resolved_location["name"],
+                "latitude": float(resolved_location["latitude"]),
+                "longitude": float(resolved_location["longitude"]),
+                "region_code": str(resolved_location.get("region_code") or ""),
+                "address_path": list(resolved_location.get("address_path") or [resolved_location["name"]]),
+                "source": str(resolved_location.get("source") or "setup"),
+                "enabled": True,
+                "default": True,
+            }
+        ]
+        data["wechat_targets"] = [
+            {
+                "id": "default-target",
+                "name": target_name,
+                "enabled": True,
+                "default": True,
+            }
+        ]
+        data["automation_jobs"] = [
+            {
+                "id": "default",
+                "location_id": "default-location",
+                "wechat_target_id": "default-target",
+                "enabled": True,
+                "interval_minutes": 120,
+                "fixed_times": [],
+                "active_windows": ["07:00-22:00"],
+                "quiet_start": "22:00",
+                "quiet_end": "07:00",
+                "allow_quiet_send": False,
+                "alert_options": normalize_alert_options({}),
+            }
+        ]
+        self._save_config_data(data)
+        config = self.server.app_config
+        return {
+            "setup_complete": config.app.setup_complete,
+            "default_location": asdict(config.default_location),
+            "default_wechat_target": asdict(config.default_wechat_target),
+            "default_job": asdict(config.default_job),
+        }
+
+    def _apply_setup_profile(self, body: dict[str, Any]) -> dict[str, Any]:
+        location = body.get("location") or {}
+        target = body.get("wechat_target") or body.get("target") or {}
+        automation = body.get("automation") or {}
+        target_name = target.get("name") if isinstance(target, dict) else target
+        payload = {
+            "location": {
+                "name": location.get("name") or body.get("location_name"),
+                "latitude": location.get("latitude", body.get("latitude")),
+                "longitude": location.get("longitude", body.get("longitude")),
+                "region_code": location.get("region_code") or body.get("region_code"),
+                "address_path": location.get("address_path") or body.get("address_path"),
+                "source": location.get("source") or "assisted-profile",
+            },
+            "wechat_target": target_name or body.get("wechat_target_name"),
+        }
+        result = self._complete_setup(payload)
+
+        data = self._load_config_data_for_write()
+        jobs = data.setdefault("automation_jobs", [])
+        if jobs:
+            job = jobs[0]
+            if "interval_minutes" in automation:
+                job["interval_minutes"] = max(1, int(automation.get("interval_minutes") or 120))
+            if "fixed_times" in automation:
+                job["fixed_times"] = normalize_fixed_times(automation.get("fixed_times"))
+            if "active_windows" in automation:
+                job["active_windows"] = normalize_active_windows(automation.get("active_windows"), strict=True)
+            if "quiet_start" in automation:
+                job["quiet_start"] = str(automation.get("quiet_start") or "22:00")
+            if "quiet_end" in automation:
+                job["quiet_end"] = str(automation.get("quiet_end") or "07:00")
+            if "allow_quiet_send" in automation:
+                job["allow_quiet_send"] = bool(automation.get("allow_quiet_send"))
+            if "active_windows" not in automation and any(
+                key in automation for key in ("quiet_start", "quiet_end", "allow_quiet_send")
+            ):
+                job["active_windows"] = active_windows_from_quiet(
+                    job.get("quiet_start"),
+                    job.get("quiet_end"),
+                    bool(job.get("allow_quiet_send", False)),
+                )
+            if "alert_options" in automation:
+                job["alert_options"] = normalize_alert_options(automation.get("alert_options"))
+            self._save_config_data(data)
+        config = self.server.app_config
+        result.update(
+            {
+                "ok": True,
+                "profile_applied": True,
+                "default_location": asdict(config.default_location),
+                "default_wechat_target": asdict(config.default_wechat_target),
+                "default_job": asdict(config.default_job),
+            }
+        )
+        return result
+
+    def _send_error(self, status: int, detail: str, context: str = "server", diagnostics: list[str] | None = None) -> None:
+        diagnostics = diagnostics or []
+        self._send_json(
+            status,
+            {
+                "ok": False,
+                "error": detail,
+                "detail": detail,
+                "diagnostics": diagnostics,
+                "error_analysis": analyze_error(detail, diagnostics, context=context).to_dict(),
+            },
+        )
+
+    def _target_name_from_body(self, body: dict[str, Any]) -> str:
+        config = self.server.app_config
+        value = str(
+            body.get("wechat_target")
+            or body.get("wechat_target_id")
+            or body.get("recipient")
+            or body.get("contact")
+            or config.contact
+        )
+        try:
+            return config.wechat_target_by_id(value).name
+        except KeyError:
+            return value
+
+    def _readiness_block_result(
+        self,
+        backend: str,
+        contact: str,
+        preview: str = "",
+    ) -> SendResult | None:
+        report = check_readiness(require_wechat=True).to_dict()
+        if report.get("can_send_now"):
+            return None
+        detail = (
+            f"当前环境不能自动发送微信：{report.get('status')}。"
+            "程序已停止真实发送，避免在锁屏、睡眠、权限不一致或微信不可访问时误操作。"
+        )
+        return SendResult(
+            ok=False,
+            backend=backend,
+            contact=contact,
+            detail=detail,
+            preview=preview,
+            diagnostics=[json.dumps(report, ensure_ascii=False)],
+            error_analysis={
+                "category": str(report.get("status") or "readiness_blocked"),
+                "title": str(report.get("title") or "环境不可自动发送"),
+                "summary": str(report.get("detail") or detail),
+                "likely_causes": [
+                    "电脑锁屏、睡眠、注销或没有可交互桌面",
+                    "微信未打开、未登录或窗口不可访问",
+                    "微信和本程序权限级别不一致",
+                ],
+                "next_steps": [
+                    "保持用户登录，允许关闭屏幕但不要睡眠",
+                    "打开并登录官方 Windows 微信",
+                    "用普通权限同时运行微信和 KangkangWeather",
+                ],
+                "severity": "error",
+                "retryable": bool(report.get("can_retry_later")),
+            },
+        )
+
+    def _next_fixed_send_at(self, config) -> str | None:
+        now = datetime.now()
+        candidates: list[datetime] = []
+        for job in config.automation_jobs:
+            if not job.enabled:
+                continue
+            for fixed_time in job.fixed_times:
+                try:
+                    hour, minute = [int(part) for part in str(fixed_time).split(":", 1)]
+                    candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                    if candidate <= now:
+                        candidate += timedelta(days=1)
+                    candidates.append(candidate)
+                except Exception:
+                    continue
+        if not candidates:
+            return None
+        return min(candidates).isoformat(timespec="seconds")
+
+    def _pending_compensations(self) -> list[dict[str, Any]]:
+        try:
+            state = self.server.monitor._load_state()
+        except Exception:
+            return []
+        rows: list[dict[str, Any]] = []
+        jobs = state.get("jobs", {})
+        if not isinstance(jobs, dict):
+            return rows
+        for job_id, job_state in jobs.items():
+            if not isinstance(job_state, dict):
+                continue
+            pending = job_state.get("fixed_pending", {})
+            if not isinstance(pending, dict):
+                continue
+            for item in pending.values():
+                if not isinstance(item, dict):
+                    continue
+                rows.append({"job_id": job_id, **item})
+        return rows[-10:]
+
+    def _dashboard_summary(self, config) -> dict[str, Any]:
+        # Keep /api/state cheap. Deep readiness checks may touch WeChat UIAutomation,
+        # powercfg, or schtasks and can hang on some machines during startup.
+        readiness = {
+            "can_send_now": None,
+            "status": "not_checked",
+            "title": "点击自动发送环境检查",
+        }
+        power = {"recommended": None}
+        sched = {"ok": None}
+        try:
+            monitor_status = self.server.monitor.status()
+        except Exception as exc:
+            monitor_status = {"enabled": False, "running": False, "error": str(exc)}
+        runs = read_runs(limit=1)
+        return {
+            "can_send_now": readiness.get("can_send_now"),
+            "readiness_status": readiness.get("status"),
+            "readiness_title": readiness.get("title"),
+            "power_recommended": power.get("recommended"),
+            "scheduler_ok": sched.get("ok"),
+            "monitor_running": bool(monitor_status.get("running")),
+            "next_check_at": monitor_status.get("next_check_at"),
+            "next_fixed_send_at": self._next_fixed_send_at(config),
+            "pending_compensations": self._pending_compensations(),
+            "last_run": runs[-1] if runs else None,
+        }
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -617,65 +980,53 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
                         },
                         "providers": asdict(config.providers),
                         "monitor": asdict(config.monitor),
+                        "message": asdict(config.message),
                         "release": asdict(config.release),
+                        "dashboard": self._dashboard_summary(config),
                     },
                 )
+            elif parsed.path == "/api/setup/status":
+                config = self.server.app_config
+                self._send_json(
+                    200,
+                    {
+                        "setup_complete": config.app.setup_complete,
+                        "default_location": asdict(config.default_location),
+                        "default_wechat_target": asdict(config.default_wechat_target),
+                    },
+                )
+            elif parsed.path == "/api/regions/tree":
+                self._send_json(200, {"regions": regions_tree()})
+            elif parsed.path == "/api/regions/search":
+                query = (parse_qs(parsed.query).get("query") or [""])[0].strip()
+                limit = int((parse_qs(parsed.query).get("limit") or ["20"])[0] or "20")
+                self._send_json(200, {"results": search_regions(query, limit=limit)})
+            elif parsed.path == "/api/weather/history":
+                limit = int((parse_qs(parsed.query).get("limit") or ["50"])[0] or "50")
+                self._send_json(200, {"history": read_weather_history(limit=limit)})
+            elif parsed.path == "/api/readiness":
+                self._send_json(200, check_readiness(require_wechat=True).to_dict())
+            elif parsed.path == "/api/power/status":
+                self._send_json(200, get_power_status())
+            elif parsed.path == "/api/scheduler/status":
+                self._send_json(200, scheduler_status())
+            elif parsed.path == "/api/runs/timeline":
+                limit = int((parse_qs(parsed.query).get("limit") or ["50"])[0] or "50")
+                self._send_json(200, {"runs": read_runs(limit=limit)})
+            elif parsed.path == "/api/runs/detail":
+                query = parse_qs(parsed.query)
+                run_id = (query.get("run_id") or [""])[0].strip()
+                limit = int((query.get("limit") or ["200"])[0] or "200")
+                self._send_json(200, {"steps": read_steps(limit=limit, run_id=run_id or None)})
+            elif parsed.path == "/api/update/check":
+                repo = (parse_qs(parsed.query).get("repo") or ["jiankang3053/kangkang"])[0].strip()
+                self._send_json(200, check_latest_release(repo=repo or "jiankang3053/kangkang"))
             elif parsed.path == "/api/locations/search":
                 query = (parse_qs(parsed.query).get("query") or [""])[0].strip()
                 if not query:
                     self._send_json(400, {"error": "query is required"})
                     return
-                results = []
-                failures = []
-                try:
-                    response = requests.get(
-                        "https://geocoding-api.open-meteo.com/v1/search",
-                        params={
-                            "name": query,
-                            "count": 8,
-                            "language": "zh",
-                            "format": "json",
-                        },
-                        timeout=12,
-                    )
-                    response.raise_for_status()
-                    for item in response.json().get("results", []):
-                        name = _display_location(item)
-                        results.append(
-                            {
-                                "name": name,
-                                "latitude": item.get("latitude"),
-                                "longitude": item.get("longitude"),
-                                "source": "open_meteo_geocoding",
-                                "country": item.get("country"),
-                                "admin1": item.get("admin1"),
-                            }
-                        )
-                except Exception as exc:
-                    failures.append(f"open_meteo_geocoding: {exc}")
-                if not results:
-                    response = requests.get(
-                        "https://nominatim.openstreetmap.org/search",
-                        params={
-                            "q": query,
-                            "format": "jsonv2",
-                            "limit": 8,
-                            "accept-language": "zh-CN",
-                        },
-                        headers={"User-Agent": "KangkangWeather/2.1"},
-                        timeout=12,
-                    )
-                    response.raise_for_status()
-                    for item in response.json():
-                        results.append(
-                            {
-                                "name": item.get("display_name") or query,
-                                "latitude": float(item.get("lat")),
-                                "longitude": float(item.get("lon")),
-                                "source": "nominatim",
-                            }
-                        )
-                self._send_json(200, {"results": results, "failures": failures})
+                self._send_json(200, {"results": search_regions(query, limit=20), "failures": []})
             elif parsed.path == "/api/preview":
                 config = self.server.app_config
                 query = parse_qs(parsed.query)
@@ -687,20 +1038,43 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
                     timeout_seconds=config.providers.timeout_seconds,
                     language=config.providers.language,
                 )
+                try:
+                    snapshot = build_weather_snapshot(
+                        weather,
+                        comparison_models=config.providers.comparison_models,
+                        fallback_wttr=config.providers.fallback_wttr,
+                    )
+                    message = build_weather_message_from_snapshot(
+                        snapshot,
+                        daily_prefix=config.message.daily_prefix,
+                        daily_style=config.message.daily_style,
+                    )
+                    weather_status = {"ok": True, **weather_status_from_snapshot(snapshot)}
+                except Exception as exc:
+                    message = f"天气加载失败：{exc}"
+                    weather_status = {
+                        "ok": False,
+                        "error": str(exc),
+                        "source_count": 0,
+                        "failures": [str(exc)],
+                        "cached": False,
+                        "stale": False,
+                        "elapsed_ms": None,
+                    }
                 self._send_json(
                     200,
                     {
                         "location": asdict(location),
                         "wechat_target": asdict(target),
                         "contact": target.name,
-                        "message": build_weather_message(
-                            weather,
-                            comparison_models=config.providers.comparison_models,
-                        ),
+                        "message": message,
+                        "weather_status": weather_status,
                     },
                 )
             elif parsed.path == "/api/diagnostics":
                 self._send_json(200, {"lines": collect_diagnostics()})
+            elif parsed.path == "/api/compat/check":
+                self._send_json(200, build_compat_report(self.server.config_path, self.server.server_port))
             elif parsed.path == "/api/monitor/status":
                 self._send_json(200, self.server.monitor.status())
             else:
@@ -750,6 +1124,128 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(200, {"automation_job": self._upsert_job(body)})
                 return
 
+            if parsed.path == "/api/message":
+                self._send_json(200, {"message": self._save_message_config(body)})
+                return
+
+            if parsed.path == "/api/readiness/check":
+                self._send_json(200, check_readiness(require_wechat=True).to_dict())
+                return
+
+            if parsed.path == "/api/power/apply-profile":
+                minutes = int(body.get("monitor_timeout_minutes") or 5)
+                self._send_json(200, apply_ac_power_profile(minutes))
+                return
+
+            if parsed.path == "/api/scheduler/repair":
+                self._send_json(200, repair_scheduler_tasks(self.server.config_path))
+                return
+
+            if parsed.path == "/api/scheduler/remove-old":
+                self._send_json(200, remove_scheduler_tasks())
+                return
+
+            if parsed.path == "/api/scheduler/run-once":
+                result = self.server.monitor.run_due(real_send=bool(body.get("real", False)))
+                self._send_json(200, result)
+                return
+
+            if parsed.path == "/api/setup/complete":
+                self._send_json(200, self._complete_setup(body))
+                return
+
+            if parsed.path == "/api/setup/apply-profile":
+                self._send_json(200, self._apply_setup_profile(body))
+                return
+
+            if parsed.path == "/api/diagnostics/export":
+                path = export_diagnostics_package(self.server.config_path, self.server.server_port)
+                self._send_json(200, {"ok": True, "path": str(path)})
+                return
+
+            if parsed.path == "/api/migration/export":
+                path = export_migration_package(self.server.config_path)
+                self._send_json(200, {"ok": True, "path": str(path)})
+                return
+
+            if parsed.path == "/api/migration/inspect":
+                path = str(body.get("path") or "").strip()
+                if not path:
+                    self._send_json(400, {"ok": False, "error": "path is required"})
+                    return
+                self._send_json(200, inspect_migration_package(path))
+                return
+
+            if parsed.path == "/api/wechat/open-target":
+                contact = self._target_name_from_body(body)
+                result = open_target_chat(contact, window_handle=self.server.window_handle)
+                self._send_json(200 if result.ok else 409, asdict(result))
+                return
+
+            if parsed.path == "/api/wechat/test-message":
+                contact = self._target_name_from_body(body)
+                message = str(body.get("message") or DEFAULT_TEST_MESSAGE).strip()
+                run_id = new_run_id("test")
+                append_step(
+                    run_id,
+                    "start",
+                    "running",
+                    f"准备发送测试消息到 {contact}",
+                    run_type="test_message",
+                    detail={"contact": contact},
+                )
+                if not message:
+                    result = SendResult(
+                        ok=False,
+                        backend="pywinauto-session",
+                        contact=contact,
+                        detail="\u6d4b\u8bd5\u6d88\u606f\u4e0d\u80fd\u4e3a\u7a7a\u3002",
+                        preview="",
+                    )
+                    append_step(run_id, "validate", "failed", "测试消息为空。", run_type="test_message")
+                    payload = asdict(result)
+                    payload["run_id"] = run_id
+                    self._send_json(400, payload)
+                    return
+                backend = str(body.get("backend") or "pywinauto-session")
+                blocked = self._readiness_block_result(backend, contact, preview=message)
+                if blocked is not None:
+                    append_step(
+                        run_id,
+                        "readiness",
+                        "blocked",
+                        "当前环境未通过发送前检查。",
+                        run_type="test_message",
+                        detail=blocked.error_analysis or {},
+                    )
+                    payload = asdict(blocked)
+                    payload["run_id"] = run_id
+                    self._send_json(409, payload)
+                    return
+                append_step(run_id, "readiness", "ok", "发送前检查通过。", run_type="test_message")
+                sender = choose_sender(
+                    real_send=True,
+                    backend=backend,
+                    window_handle=self.server.window_handle,
+                    send_strategy=self.server.app_config.monitor.wechat_send_strategy,
+                    allow_send_button_coordinate_fallback=(
+                        self.server.app_config.monitor.allow_send_button_coordinate_fallback
+                    ),
+                )
+                result = sender.send(contact, message)
+                append_step(
+                    run_id,
+                    "wechat_send",
+                    "ok" if result.ok else "failed",
+                    result.detail,
+                    run_type="test_message",
+                    detail={"diagnostics": result.diagnostics, "error_analysis": result.error_analysis},
+                )
+                payload = asdict(result)
+                payload["run_id"] = run_id
+                self._send_json(200 if result.ok else 409, payload)
+                return
+
             if parsed.path == "/api/monitor/check":
                 real_send = bool(body.get("real", False)) and not bool(body.get("dry_run", False))
                 result = self.server.monitor.check_once(
@@ -771,24 +1267,89 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
             )
             backend = str(body.get("backend") or "pywinauto-session")
             real = bool(body.get("real", False))
+            run_id = new_run_id("weather")
+            append_step(
+                run_id,
+                "start",
+                "running",
+                f"准备生成 {location.name} 天气并发送到 {target.name}",
+                run_type="send_weather",
+                detail={"location_id": location.id, "wechat_target_id": target.id, "real": real},
+            )
+            if real and not config.app.setup_complete:
+                result = SendResult(
+                    ok=False,
+                    backend=backend,
+                    contact=target.name,
+                    detail="\u9996\u6b21\u8bbe\u7f6e\u672a\u5b8c\u6210\u3002\u8bf7\u5148\u8bbe\u7f6e\u5929\u6c14\u5730\u5740\u548c\u5fae\u4fe1\u597d\u53cb/\u7fa4\u540d\u79f0\uff0c\u518d\u6267\u884c\u771f\u5b9e\u53d1\u9001\u3002",
+                    preview="",
+                )
+                append_step(run_id, "setup", "blocked", "首次设置未完成。", run_type="send_weather")
+                payload = asdict(result)
+                payload["run_id"] = run_id
+                self._send_json(409, payload)
+                return
             weather = location.weather_config(
                 timeout_seconds=config.providers.timeout_seconds,
                 language=config.providers.language,
             )
-            message = build_weather_message(
+            snapshot = build_weather_snapshot(
                 weather,
                 comparison_models=config.providers.comparison_models,
+                fallback_wttr=config.providers.fallback_wttr,
             )
+            append_step(
+                run_id,
+                "weather",
+                "ok",
+                "天气数据获取完成。",
+                run_type="send_weather",
+                detail=weather_status_from_snapshot(snapshot),
+            )
+            message = build_weather_message_from_snapshot(
+                snapshot,
+                daily_prefix=config.message.daily_prefix,
+                daily_style=config.message.daily_style,
+            )
+            if real:
+                blocked = self._readiness_block_result(backend, target.name, preview=message)
+                if blocked is not None:
+                    append_step(
+                        run_id,
+                        "readiness",
+                        "blocked",
+                        "当前环境未通过发送前检查。",
+                        run_type="send_weather",
+                        detail=blocked.error_analysis or {},
+                    )
+                    payload = asdict(blocked)
+                    payload["run_id"] = run_id
+                    self._send_json(409, payload)
+                    return
+                append_step(run_id, "readiness", "ok", "发送前检查通过。", run_type="send_weather")
             sender = choose_sender(
                 real_send=real,
                 backend=backend,
                 window_handle=self.server.window_handle,
+                send_strategy=config.monitor.wechat_send_strategy,
+                allow_send_button_coordinate_fallback=(
+                    config.monitor.allow_send_button_coordinate_fallback
+                ),
             )
             result = sender.send(target.name, message)
             payload = asdict(result)
+            append_step(
+                run_id,
+                "wechat_send" if real else "dry_run",
+                "ok" if result.ok else "failed",
+                result.detail,
+                run_type="send_weather",
+                detail={"diagnostics": result.diagnostics, "error_analysis": result.error_analysis},
+            )
+            payload["run_id"] = run_id
             self._send_json(200 if result.ok else 409, payload)
         except Exception as exc:
-            self._send_json(500, {"error": str(exc)})
+            self._send_error(500, str(exc), context="server")
 
     def do_PATCH(self) -> None:
         parsed = urlparse(self.path)
@@ -803,10 +1364,12 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/automation/jobs":
                 item_id = str(body.get("id") or "")
                 self._send_json(200, {"automation_job": self._upsert_job(body, item_id=item_id)})
+            elif parsed.path == "/api/message":
+                self._send_json(200, {"message": self._save_message_config(body)})
             else:
                 self._send_json(404, {"error": "not found"})
         except Exception as exc:
-            self._send_json(500, {"error": str(exc)})
+            self._send_error(500, str(exc), context="server")
 
     def do_DELETE(self) -> None:
         parsed = urlparse(self.path)
@@ -822,7 +1385,7 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
             else:
                 self._send_json(404, {"error": "not found"})
         except Exception as exc:
-            self._send_json(500, {"error": str(exc)})
+            self._send_error(500, str(exc), context="server")
 
 
 def run_server(
