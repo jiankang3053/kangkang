@@ -18,6 +18,7 @@ import requests
 
 from .config import APP_NAME, APP_VERSION, config_to_dict, default_user_config_path, load_config, user_data_dir
 from .readiness import check_readiness
+from .send_batch import read_send_history
 from .wechat import collect_diagnostics
 
 
@@ -251,12 +252,20 @@ def export_diagnostics_package(config_path: str | None = None, active_port: int 
     report = build_compat_report(config_path=config_path, active_port=active_port)
     diagnostics = collect_diagnostics()
     log_path = root / "logs" / "app.log"
+    send_history = read_send_history(limit=50)
+    weather_history_path = root / "weather_fetch_history.json"
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         (tmp_path / "compat_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         (tmp_path / "diagnostics.txt").write_text("\n".join(diagnostics), encoding="utf-8")
         (tmp_path / "config.redacted.json").write_text(json.dumps(_redact_config(config_data), ensure_ascii=False, indent=2), encoding="utf-8")
+        (tmp_path / "send_history.json").write_text(json.dumps(send_history, ensure_ascii=False, indent=2), encoding="utf-8")
+        if weather_history_path.exists():
+            (tmp_path / "weather_fetch_history.json").write_text(
+                weather_history_path.read_text(encoding="utf-8", errors="replace"),
+                encoding="utf-8",
+            )
         if log_path.exists():
             (tmp_path / "app.log").write_text(log_path.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
         with ZipFile(zip_path, "w", ZIP_DEFLATED) as archive:

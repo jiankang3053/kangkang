@@ -147,8 +147,25 @@ class DesktopApp:
         self.settings_search = tk.StringVar()
         self.settings_active_windows: list[str] = ["07:00-22:00"]
         self.settings_fixed_times: list[str] = []
+        self.reminder_mode = tk.StringVar(value="smart")
+        self.normal_weather_action = tk.StringVar(value="full")
+        self.abnormal_weather_action = tk.StringVar(value="full")
+        self.startup_enabled = tk.BooleanVar(value=False)
+        self.tray_minimize_to_tray = tk.BooleanVar(value=True)
+        self.tray_close_to_tray = tk.BooleanVar(value=True)
+        self.tray_notifications = tk.BooleanVar(value=True)
+        self.dnd_enabled = tk.BooleanVar(value=True)
+        self.dnd_fullscreen = tk.BooleanVar(value=True)
+        self.dnd_busy_process = tk.BooleanVar(value=True)
+        self.dnd_busy_app = tk.BooleanVar(value=True)
+        self.dnd_action = tk.StringVar(value="delay")
+        self.dnd_delay = tk.StringVar(value="10")
+        self.dnd_max_delay = tk.StringVar(value="60")
+        self._really_exit = False
+        self._tray_icon = None
 
         self._build_ui()
+        self.root.bind("<Unmap>", self._on_unmap, add="+")
         self.refresh_regions()
         self.refresh_state()
         self.refresh_preview()
@@ -334,7 +351,20 @@ class DesktopApp:
     def refresh_history(self) -> None:
         try:
             data = self.runtime.get_json("api/weather/history?limit=10")
+            send_data = self.runtime.get_json("api/send-history?limit=5")
             lines = []
+            send_rows = send_data.get("history", [])
+            if send_rows:
+                lines.append("【最近发送批次】")
+                for item in reversed(send_rows):
+                    summary = item.get("summary", {})
+                    lines.append(
+                        f"{item.get('finished_at') or item.get('started_at') or '-'}\n"
+                        f"{item.get('status', '-')}：共 {summary.get('total', 0)}，"
+                        f"成功 {summary.get('success', 0)}，失败 {summary.get('failed', 0)}，"
+                        f"跳过 {summary.get('skipped', 0)}\n"
+                    )
+                lines.append("【天气查询记录】")
             for item in data.get("history", []):
                 status = {"ok": "成功", "cache": "缓存", "failed": "失败"}.get(item.get("status"), item.get("status", "-"))
                 failures = f"；失败源 {len(item.get('failures') or [])}" if item.get("failures") else ""
@@ -344,7 +374,7 @@ class DesktopApp:
                     f"{item.get('address', '-')}：{status}，{item.get('source_count', 0)} 源，{item.get('elapsed_ms', '-')} ms{failures}{disagreement}\n"
                     f"{item.get('error') or ', '.join(item.get('sources') or [])}\n"
                 )
-            self._set_text(self.history_text, "\n".join(lines) if lines else "还没有天气查询记录。")
+            self._set_text(self.history_text, "\n".join(lines) if lines else "还没有天气查询或发送记录。")
         except Exception:
             pass
 
@@ -555,6 +585,65 @@ class DesktopApp:
         ttk.Checkbutton(rules, text="天气升级提醒", variable=self.settings_weather_upgrade).grid(row=2, column=0, sticky="w", pady=(8, 0))
         ttk.Checkbutton(rules, text="明后天降雨升级", variable=self.settings_future_rain_upgrade).grid(row=2, column=1, sticky="w", pady=(8, 0))
 
+        smart = ttk.LabelFrame(root, text="智能提醒与后台运行", padding=10)
+        smart.pack(fill="x", pady=(0, 10))
+        ttk.Label(smart, text="提醒模式").grid(row=0, column=0, sticky="w")
+        ttk.Combobox(
+            smart,
+            textvariable=self.reminder_mode,
+            state="readonly",
+            values=["always_full", "smart", "abnormal_only", "short_daily", "silent"],
+        ).grid(row=1, column=0, sticky="ew", padx=(0, 8), pady=(2, 0))
+        ttk.Label(smart, text="天气正常时").grid(row=0, column=1, sticky="w")
+        ttk.Combobox(
+            smart,
+            textvariable=self.normal_weather_action,
+            state="readonly",
+            values=["none", "short", "full"],
+        ).grid(row=1, column=1, sticky="ew", padx=(0, 8), pady=(2, 0))
+        ttk.Label(smart, text="天气异常时").grid(row=0, column=2, sticky="w")
+        ttk.Combobox(
+            smart,
+            textvariable=self.abnormal_weather_action,
+            state="readonly",
+            values=["short", "full", "urgent"],
+        ).grid(row=1, column=2, sticky="ew", padx=(0, 8), pady=(2, 0))
+        for col in range(3):
+            smart.columnconfigure(col, weight=1)
+
+        background = ttk.Frame(smart)
+        background.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        ttk.Checkbutton(background, text="开机自动启动", variable=self.startup_enabled).pack(side="left", padx=(0, 10))
+        ttk.Checkbutton(background, text="最小化到托盘", variable=self.tray_minimize_to_tray).pack(side="left", padx=(0, 10))
+        ttk.Checkbutton(background, text="关闭窗口时隐藏到托盘", variable=self.tray_close_to_tray).pack(side="left", padx=(0, 10))
+        ttk.Checkbutton(background, text="显示托盘通知", variable=self.tray_notifications).pack(side="left", padx=(0, 10))
+
+        dnd = ttk.LabelFrame(root, text="勿扰模式", padding=10)
+        dnd.pack(fill="x", pady=(0, 10))
+        ttk.Checkbutton(dnd, text="自动发送前检查忙碌状态", variable=self.dnd_enabled).grid(row=0, column=0, sticky="w")
+        ttk.Checkbutton(dnd, text="检测全屏应用", variable=self.dnd_fullscreen).grid(row=0, column=1, sticky="w")
+        ttk.Checkbutton(dnd, text="检测游戏/视频软件", variable=self.dnd_busy_process).grid(row=0, column=2, sticky="w")
+        ttk.Checkbutton(dnd, text="检测演示/忙碌窗口", variable=self.dnd_busy_app).grid(row=0, column=3, sticky="w")
+        ttk.Label(dnd, text="忙碌时处理").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Combobox(
+            dnd,
+            textvariable=self.dnd_action,
+            state="readonly",
+            values=["delay", "skip", "tray_only", "force_send"],
+            width=14,
+        ).grid(row=2, column=0, sticky="ew", padx=(0, 8), pady=(2, 0))
+        ttk.Label(dnd, text="延迟分钟").grid(row=1, column=1, sticky="w", pady=(8, 0))
+        ttk.Entry(dnd, textvariable=self.dnd_delay, width=8).grid(row=2, column=1, sticky="w", padx=(0, 8), pady=(2, 0))
+        ttk.Label(dnd, text="最大延迟分钟").grid(row=1, column=2, sticky="w", pady=(8, 0))
+        ttk.Entry(dnd, textvariable=self.dnd_max_delay, width=8).grid(row=2, column=2, sticky="w", padx=(0, 8), pady=(2, 0))
+        ttk.Label(dnd, text="高级进程黑名单暂通过配置文件维护；不会截图或记录窗口标题全文。").grid(
+            row=3,
+            column=0,
+            columnspan=4,
+            sticky="w",
+            pady=(8, 0),
+        )
+
         history = ttk.LabelFrame(root, text="天气查询记录", padding=10)
         history.pack(fill="both", expand=True, pady=(0, 10))
         ttk.Button(history, text="刷新记录", command=self.refresh_history).pack(anchor="w")
@@ -675,6 +764,24 @@ class DesktopApp:
         self.settings_temp_change.set(str(options.get("temp_change_celsius", 3)))
         self.settings_weather_upgrade.set(bool(options.get("weather_upgrade_enabled", True)))
         self.settings_future_rain_upgrade.set(bool(options.get("future_rain_upgrade_enabled", True)))
+        policy = self.state.get("reminder_policy") or {}
+        self.reminder_mode.set(str(policy.get("mode") or "smart"))
+        self.normal_weather_action.set(str(policy.get("normal_weather_action") or "full"))
+        self.abnormal_weather_action.set(str(policy.get("abnormal_weather_action") or "full"))
+        startup = self.state.get("startup") or {}
+        self.startup_enabled.set(bool(startup.get("enabled", False)))
+        tray = self.state.get("tray") or {}
+        self.tray_minimize_to_tray.set(bool(tray.get("minimize_to_tray", True)))
+        self.tray_close_to_tray.set(bool(tray.get("close_to_tray", True)))
+        self.tray_notifications.set(bool(tray.get("show_tray_notifications", True)))
+        dnd = self.state.get("do_not_disturb") or {}
+        self.dnd_enabled.set(bool(dnd.get("enabled", True)))
+        self.dnd_fullscreen.set(bool(dnd.get("detect_fullscreen", True)))
+        self.dnd_busy_process.set(bool(dnd.get("detect_game_process", True)))
+        self.dnd_busy_app.set(bool(dnd.get("detect_foreground_busy_app", True)))
+        self.dnd_action.set(str(dnd.get("busy_action") or "delay"))
+        self.dnd_delay.set(str(dnd.get("delay_minutes", 10)))
+        self.dnd_max_delay.set(str(dnd.get("max_delay_minutes", 60)))
         self.refresh_settings_chips()
         self.status_var.set("已填入当前配置")
 
@@ -699,16 +806,134 @@ class DesktopApp:
             }
             if not payload["wechat_target"]["name"]:
                 raise ValueError("请先填写微信好友或群名称。")
+            system_payload = {
+                "reminder_policy": {
+                    "enabled": True,
+                    "mode": self.reminder_mode.get(),
+                    "normal_weather_action": self.normal_weather_action.get(),
+                    "abnormal_weather_action": self.abnormal_weather_action.get(),
+                },
+                "startup": {"enabled": self.startup_enabled.get()},
+                "tray": {
+                    "enabled": True,
+                    "minimize_to_tray": self.tray_minimize_to_tray.get(),
+                    "close_to_tray": self.tray_close_to_tray.get(),
+                    "show_tray_notifications": self.tray_notifications.get(),
+                },
+                "do_not_disturb": {
+                    "enabled": self.dnd_enabled.get(),
+                    "detect_fullscreen": self.dnd_fullscreen.get(),
+                    "detect_game_process": self.dnd_busy_process.get(),
+                    "detect_foreground_busy_app": self.dnd_busy_app.get(),
+                    "busy_action": self.dnd_action.get(),
+                    "delay_minutes": int(self.dnd_delay.get() or 10),
+                    "max_delay_minutes": int(self.dnd_max_delay.get() or 60),
+                },
+            }
         except Exception as exc:
             messagebox.showwarning("配置不完整", str(exc))
             return
 
         def work() -> dict[str, Any]:
-            return self.runtime.post_json("api/setup/apply-profile", payload)
+            profile = self.runtime.post_json("api/setup/apply-profile", payload)
+            system = self.runtime.post_json("api/system-settings", system_payload)
+            return {"ok": True, "profile": profile, "system_settings": system}
 
         self._run_background("正在保存自动化配置...", work)
 
+    def _on_unmap(self, _: tk.Event) -> None:
+        if self._really_exit:
+            return
+        try:
+            if self.root.state() == "iconic" and self.state.get("tray", {}).get("minimize_to_tray", True):
+                self.root.after(80, self.hide_to_tray)
+        except Exception:
+            pass
+
+    def _ensure_desktop_tray(self) -> bool:
+        if self._tray_icon is not None:
+            return True
+        try:
+            import pystray
+            from .tray import _make_icon_image
+        except Exception as exc:
+            messagebox.showwarning(
+                "托盘不可用",
+                f"系统托盘依赖不可用，窗口将正常退出或最小化。原始错误：{exc}",
+            )
+            return False
+
+        def show(_: Any = None) -> None:
+            self.root.after(0, self.show_from_tray)
+
+        def refresh(_: Any = None) -> None:
+            self.root.after(0, self.refresh_preview)
+
+        def send(_: Any = None) -> None:
+            self.root.after(0, self.send_weather)
+
+        def pause(_: Any = None) -> None:
+            self._run_background("正在暂停自动化...", lambda: self.runtime.post_json("api/monitor/pause", {}))
+
+        def resume(_: Any = None) -> None:
+            self._run_background("正在恢复自动化...", lambda: self.runtime.post_json("api/monitor/resume", {}))
+
+        def settings(_: Any = None) -> None:
+            self.root.after(0, self.open_settings)
+
+        def diagnostics(_: Any = None) -> None:
+            self.root.after(0, self.export_diagnostics)
+
+        def quit_app(icon: Any, *_: Any) -> None:
+            self.root.after(0, self.exit_program)
+
+        menu = pystray.Menu(
+            pystray.MenuItem("显示主窗口", show, default=True),
+            pystray.MenuItem("刷新天气", refresh),
+            pystray.MenuItem("发送今日天气", send),
+            pystray.MenuItem("暂停自动化", pause),
+            pystray.MenuItem("恢复自动化", resume),
+            pystray.MenuItem("打开设置", settings),
+            pystray.MenuItem("导出诊断包", diagnostics),
+            pystray.MenuItem("退出程序", quit_app),
+        )
+        self._tray_icon = pystray.Icon("KangkangWeatherDesktop", _make_icon_image(), "Kangkang Weather", menu)
+        try:
+            self._tray_icon.run_detached()
+        except Exception:
+            self._tray_icon = None
+            return False
+        return True
+
+    def hide_to_tray(self) -> bool:
+        if not self.state.get("tray", {}).get("enabled", True):
+            return False
+        if not self._ensure_desktop_tray():
+            return False
+        self.root.withdraw()
+        self.status_var.set("已隐藏到托盘，自动化继续运行")
+        return True
+
+    def show_from_tray(self) -> None:
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+        self.status_var.set("已显示主窗口")
+
+    def exit_program(self) -> None:
+        self._really_exit = True
+        try:
+            if self._tray_icon is not None:
+                self._tray_icon.stop()
+                self._tray_icon = None
+        except Exception:
+            pass
+        self.close()
+
     def close(self) -> None:
+        if not self._really_exit and self.state.get("tray", {}).get("close_to_tray", True):
+            if self.hide_to_tray():
+                return
         try:
             self.runtime.close()
         finally:

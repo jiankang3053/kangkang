@@ -1,4 +1,4 @@
-# Kangkang Weather v3.1.1
+# Kangkang Weather v3.6.0
 
 Windows 微信天气提醒桌面版。程序在本机获取天气预报，通过已登录的官方 Windows 微信客户端发送日报或风险变化提醒。
 
@@ -14,6 +14,9 @@ Windows 微信天气提醒桌面版。程序在本机获取天气预报，通过
 - 天气日报样式为“今日分时段提醒 + 明天/后天简报”，支持保存发送前缀。
 - v3.1 新增运行总览、左上角版本号、运行追踪、迁移包导出和 GitHub 更新检查。
 - v3.1.1 修复桌面版启动时深度自检导致 `/api/state` 超时弹窗的问题，启动状态接口现在保持轻量。
+- v3.5.0 新增多微信目标发送底层能力：配置带目标类型、备注、发送间隔、最近结果；发送天气支持批次 ID、目标级结果、JSONL 发送历史和并发发送锁。
+- 新增智能提醒与后台勿扰能力：自动发送可按天气正常/异常选择完整、简短或跳过；支持 HKCU 开机自启动、托盘后台运行、全屏/游戏/视频/演示勿扰检测。
+- v3.6.0 将近几轮工程收束为正式构建版：多对象发送、智能提醒、后台托盘、开机自启、勿扰检测和发布文档同步完成。
 - 默认任务是 `嘉鱼县 -> 湘楠`，每 120 分钟检查一次，自动发送时间段为 `07:00-22:00`。
 
 ## 使用
@@ -78,6 +81,29 @@ python -m wechat_weather.cli build-package
   "message": {
     "daily_style": "segmented_brief",
     "daily_prefix": ""
+  },
+  "reminder_policy": {
+    "enabled": true,
+    "mode": "smart",
+    "normal_weather_action": "full",
+    "abnormal_weather_action": "full",
+    "short_message_max_chars": 30,
+    "record_skipped_history": true
+  },
+  "startup": {
+    "enabled": false
+  },
+  "tray": {
+    "enabled": true,
+    "minimize_to_tray": true,
+    "close_to_tray": true,
+    "show_tray_notifications": true
+  },
+  "do_not_disturb": {
+    "enabled": true,
+    "busy_action": "delay",
+    "delay_minutes": 10,
+    "max_delay_minutes": 60
   }
 }
 ```
@@ -93,10 +119,12 @@ python -m wechat_weather.cli build-package
 输出：
 
 ```text
-dist\KangkangWeather-v3.1.1.zip
-dist\KangkangWeatherSetup-v3.1.1.exe
+dist\KangkangWeather-v3.6.0.zip
+dist\KangkangWeatherSetup-v3.6.0.exe
 ```
 
 ## 说明
 
 本项目不使用微信协议登录、Hook 或注入，只控制当前电脑上已经登录的 Windows 微信客户端。安装包未做代码签名，Windows SmartScreen 可能提醒。
+
+智能提醒和勿扰模式说明见 [docs/SMART_BACKGROUND_DND.md](docs/SMART_BACKGROUND_DND.md)。全屏/游戏检测只能判断前台窗口和进程名，不截图、不读取窗口内容，也不能保证 100% 准确。

@@ -15,6 +15,7 @@ import webbrowser
 
 from .config import APP_NAME, APP_VERSION, load_config, user_data_dir
 from .server import WeatherServer
+from .startup_manager import StartupManager
 
 
 def _project_root() -> Path:
@@ -38,7 +39,7 @@ def _startup_file() -> Path:
 
 
 def _autostart_enabled() -> bool:
-    return _startup_file().exists()
+    return StartupManager().is_enabled()
 
 
 def _startup_args(config_path: str | None) -> list[str]:
@@ -52,18 +53,11 @@ def _startup_args(config_path: str | None) -> list[str]:
 
 
 def _set_autostart(enabled: bool, config_path: str | None) -> None:
-    path = _startup_file()
+    manager = StartupManager(config_path)
     if enabled:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        command = subprocess.list2cmdline(_startup_args(config_path))
-        root = _project_root()
-        path.write_text(
-            f"@echo off\r\ncd /d {subprocess.list2cmdline([str(root)])}\r\n"
-            f"start \"\" /min {command}\r\n",
-            encoding="utf-8",
-        )
-    elif path.exists():
-        path.unlink()
+        manager.enable()
+    else:
+        manager.disable()
 
 
 def _port_open(host: str, port: int) -> bool:
@@ -173,7 +167,36 @@ class TrayRuntime:
         if self.icon is not None:
             self.icon.title = text[:63]
 
+    def refresh_tooltip(self) -> None:
+        try:
+            state = _get_json(f"{self.url}api/state")
+            location = next(
+                (
+                    item
+                    for item in state.get("locations", [])
+                    if item.get("id") == state.get("defaults", {}).get("location_id")
+                ),
+                {},
+            )
+            dashboard = state.get("dashboard", {})
+            monitor = state.get("monitor", {})
+            self._set_title(
+                "\n".join(
+                    [
+                        "Kangkang Weather",
+                        f"城市：{location.get('name') or '待确认'}",
+                        f"自动化：{'已开启' if monitor.get('enabled') else '已暂停'}",
+                        f"下次发送：{dashboard.get('next_fixed_send_at') or dashboard.get('next_check_at') or '暂无'}",
+                    ]
+                )
+            )
+        except Exception:
+            self._set_title("Kangkang Weather")
+
     def open_console(self, *_: Any) -> None:
+        webbrowser.open(self.url)
+
+    def open_settings(self, *_: Any) -> None:
         webbrowser.open(self.url)
 
     def check_now(self, *_: Any) -> None:
@@ -185,6 +208,7 @@ class TrayRuntime:
                     {"real": True, "recipient": self.config.contact},
                 )
                 self._set_title("Kangkang Weather: 检查完成")
+                self.refresh_tooltip()
             except Exception as exc:
                 self._set_title(f"检查失败: {exc}")
 
@@ -203,8 +227,52 @@ class TrayRuntime:
                     },
                 )
                 self._set_title("Kangkang Weather: 发送完成")
+                self.refresh_tooltip()
             except Exception as exc:
                 self._set_title(f"发送失败: {exc}")
+
+    def refresh_weather(self, *_: Any) -> None:
+        def run() -> None:
+            self._set_title("Kangkang Weather: 正在刷新天气")
+            try:
+                _get_json(f"{self.url}api/preview")
+                self._set_title("Kangkang Weather: 天气已刷新")
+                self.refresh_tooltip()
+            except Exception as exc:
+                self._set_title(f"刷新失败: {exc}")
+
+        self._background(run)
+
+    def pause_monitor(self, *_: Any) -> None:
+        def run() -> None:
+            try:
+                _post_json(f"{self.url}api/monitor/pause", {})
+                self._set_title("Kangkang Weather: 自动化已暂停")
+            except Exception as exc:
+                self._set_title(f"暂停失败: {exc}")
+
+        self._background(run)
+
+    def resume_monitor(self, *_: Any) -> None:
+        def run() -> None:
+            try:
+                _post_json(f"{self.url}api/monitor/resume", {})
+                self._set_title("Kangkang Weather: 自动化已恢复")
+            except Exception as exc:
+                self._set_title(f"恢复失败: {exc}")
+
+        self._background(run)
+
+    def export_diagnostics(self, *_: Any) -> None:
+        def run() -> None:
+            try:
+                result = _post_json(f"{self.url}api/diagnostics/export", {})
+                self._set_title("诊断包已导出")
+                logging.info("Diagnostics exported: %s", result.get("path"))
+            except Exception as exc:
+                self._set_title(f"导出失败: {exc}")
+
+        self._background(run)
 
         self._background(run)
 
@@ -252,9 +320,14 @@ def run_tray(config_path: str | None = None, window_handle: int | None = None) -
         raise
 
     menu = pystray.Menu(
-        pystray.MenuItem("打开控制台", runtime.open_console, default=True),
+        pystray.MenuItem("显示主窗口", runtime.open_console, default=True),
+        pystray.MenuItem("刷新天气", runtime.refresh_weather),
         pystray.MenuItem("立即检查", runtime.check_now),
         pystray.MenuItem("发送今日天气", runtime.send_weather),
+        pystray.MenuItem("暂停自动化", runtime.pause_monitor),
+        pystray.MenuItem("恢复自动化", runtime.resume_monitor),
+        pystray.MenuItem("打开设置", runtime.open_settings),
+        pystray.MenuItem("导出诊断包", runtime.export_diagnostics),
         pystray.MenuItem(
             "开机自启",
             runtime.toggle_autostart,
@@ -264,4 +337,5 @@ def run_tray(config_path: str | None = None, window_handle: int | None = None) -
     )
     icon = pystray.Icon(APP_NAME, _make_icon_image(), "Kangkang Weather", menu)
     runtime.icon = icon
+    runtime.refresh_tooltip()
     icon.run()

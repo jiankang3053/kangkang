@@ -405,7 +405,7 @@ class PortableV22Tests(unittest.TestCase):
             cfg = load_config(str(path))
 
         self.assertTrue(cfg.app.setup_complete)
-        self.assertEqual(cfg.app.version, "3.1.1")
+        self.assertEqual(cfg.app.version, "3.6.0")
         self.assertEqual(cfg.monitor.wechat_send_strategy, "enter_first")
         self.assertFalse(cfg.monitor.allow_send_button_coordinate_fallback)
 

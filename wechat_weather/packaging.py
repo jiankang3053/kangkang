@@ -126,6 +126,12 @@ def build_package(config_path: str | None = None, output_dir: str | None = None)
         "wechat_weather.migration",
         "--hidden-import",
         "wechat_weather.updater",
+        "--hidden-import",
+        "wechat_weather.busy_detector",
+        "--hidden-import",
+        "wechat_weather.reminder_policy",
+        "--hidden-import",
+        "wechat_weather.startup_manager",
         str(entry),
     ]
     subprocess.run(command, cwd=root, check=True)

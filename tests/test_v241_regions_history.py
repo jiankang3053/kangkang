@@ -123,7 +123,7 @@ class V241RegionsHistoryTests(unittest.TestCase):
 
             cfg = load_config(str(config_path))
 
-        self.assertEqual(APP_VERSION, "3.1.1")
+        self.assertEqual(APP_VERSION, "3.6.0")
         self.assertEqual(cfg.default_location.region_code, "421221")
         self.assertEqual(cfg.default_location.address_path, ["湖北省", "咸宁市", "嘉鱼县"])
 

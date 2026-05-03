@@ -338,6 +338,8 @@ class WeatherV2Tests(unittest.TestCase):
             state = json.loads(state_path.read_text(encoding="utf-8"))
             self.assertIn("default", state["jobs"])
             self.assertIn("backup", state["jobs"])
+            self.assertEqual(state["jobs"]["default"]["automation_state"]["status"], "SUCCESS")
+            self.assertTrue(state["jobs"]["default"]["recent_states"])
             sent_today = state["jobs"]["default"]["sent_alert_keys"][fixed_now.strftime("%Y-%m-%d")]
             self.assertEqual(sent_today, [])
 

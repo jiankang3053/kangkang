@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -17,7 +18,8 @@ from .weather import WeatherConfig
 
 
 APP_NAME = "KangkangWeather"
-APP_VERSION = "3.1.1"
+APP_VERSION = "3.6.0"
+CONFIG_VERSION = 3
 DEFAULT_CONTACT = "湘楠"
 DEFAULT_CITY_LABEL = "嘉鱼县"
 DEFAULT_LATITUDE = 29.9724209
@@ -71,8 +73,16 @@ class LocationConfig:
 class WechatTargetConfig:
     id: str = DEFAULT_TARGET_ID
     name: str = DEFAULT_CONTACT
+    type: str = "friend"
     enabled: bool = True
     default: bool = True
+    remark: str = ""
+    send_mode: str = "normal"
+    send_interval_seconds: int = 3
+    last_send_at: str | None = None
+    last_send_status: str | None = None
+    last_error_code: str | None = None
+    last_error_message: str | None = None
 
 
 @dataclass(frozen=True)
@@ -161,7 +171,89 @@ class MessageConfig:
 
 
 @dataclass(frozen=True)
+class ReminderAbnormalRulesConfig:
+    rain: bool = True
+    storm: bool = True
+    temperature_drop: bool = True
+    high_temperature: bool = True
+    low_temperature: bool = True
+    strong_wind: bool = True
+    bad_air_quality: bool = True
+    strong_uv: bool = True
+
+
+@dataclass(frozen=True)
+class ReminderThresholdsConfig:
+    high_temperature_c: float = 35.0
+    low_temperature_c: float = 5.0
+    temperature_drop_c: float = 6.0
+    strong_wind_level: float = 5.0
+    bad_aqi: int = 100
+    strong_uv: float = 6.0
+    rain_probability_percent: int = 50
+
+
+@dataclass(frozen=True)
+class ReminderPolicyConfig:
+    enabled: bool = True
+    mode: str = "smart"
+    normal_weather_action: str = "full"
+    abnormal_weather_action: str = "full"
+    short_message_max_chars: int = 30
+    record_skipped_history: bool = True
+    abnormal_rules: ReminderAbnormalRulesConfig = field(default_factory=ReminderAbnormalRulesConfig)
+    thresholds: ReminderThresholdsConfig = field(default_factory=ReminderThresholdsConfig)
+
+
+@dataclass(frozen=True)
+class StartupConfig:
+    enabled: bool = False
+
+
+@dataclass(frozen=True)
+class TrayConfig:
+    enabled: bool = True
+    minimize_to_tray: bool = True
+    close_to_tray: bool = True
+    show_tray_notifications: bool = True
+
+
+@dataclass(frozen=True)
+class DoNotDisturbConfig:
+    enabled: bool = True
+    detect_fullscreen: bool = True
+    detect_game_process: bool = True
+    detect_foreground_busy_app: bool = True
+    busy_action: str = "delay"
+    delay_minutes: int = 10
+    max_delay_minutes: int = 60
+    skip_if_still_busy: bool = True
+    process_blocklist: list[str] = field(
+        default_factory=lambda: [
+            "steam.exe",
+            "steamwebhelper.exe",
+            "wegame.exe",
+            "LeagueClient.exe",
+            "League of Legends.exe",
+            "cs2.exe",
+            "valorant.exe",
+            "GenshinImpact.exe",
+            "YuanShen.exe",
+            "PotPlayerMini64.exe",
+            "PotPlayerMini.exe",
+            "vlc.exe",
+            "obs64.exe",
+            "POWERPNT.EXE",
+        ]
+    )
+    window_title_keywords: list[str] = field(
+        default_factory=lambda: ["Presentation", "Slide Show", "全屏", "演示"]
+    )
+
+
+@dataclass(frozen=True)
 class AppConfig:
+    config_version: int = CONFIG_VERSION
     app: AppSettings = AppSettings()
     locations: list[LocationConfig] = field(default_factory=lambda: [LocationConfig()])
     wechat_targets: list[WechatTargetConfig] = field(
@@ -173,6 +265,10 @@ class AppConfig:
     providers: ProvidersConfig = ProvidersConfig()
     monitor: MonitorConfig = MonitorConfig()
     message: MessageConfig = MessageConfig()
+    reminder_policy: ReminderPolicyConfig = ReminderPolicyConfig()
+    startup: StartupConfig = StartupConfig()
+    tray: TrayConfig = TrayConfig()
+    do_not_disturb: DoNotDisturbConfig = DoNotDisturbConfig()
     release: ReleaseConfig = ReleaseConfig()
 
     @property
@@ -492,8 +588,130 @@ def normalize_alert_options(values: Any) -> dict[str, Any]:
     }
 
 
+def normalize_reminder_policy(values: Any) -> dict[str, Any]:
+    defaults = asdict(ReminderPolicyConfig())
+    raw = values if isinstance(values, dict) else {}
+    allowed_modes = {"always_full", "smart", "abnormal_only", "short_daily", "silent"}
+    allowed_normal = {"none", "short", "full"}
+    allowed_abnormal = {"short", "full", "urgent"}
+    rules_raw = raw.get("abnormal_rules") if isinstance(raw.get("abnormal_rules"), dict) else {}
+    thresholds_raw = raw.get("thresholds") if isinstance(raw.get("thresholds"), dict) else {}
+    rules_default = defaults["abnormal_rules"]
+    thresholds_default = defaults["thresholds"]
+    mode = str(raw.get("mode") or defaults["mode"])
+    normal_action = str(raw.get("normal_weather_action") or defaults["normal_weather_action"])
+    abnormal_action = str(raw.get("abnormal_weather_action") or defaults["abnormal_weather_action"])
+    thresholds = {
+        "high_temperature_c": float(
+            thresholds_raw.get("high_temperature_c", thresholds_default["high_temperature_c"])
+        ),
+        "low_temperature_c": float(
+            thresholds_raw.get("low_temperature_c", thresholds_default["low_temperature_c"])
+        ),
+        "temperature_drop_c": float(
+            thresholds_raw.get("temperature_drop_c", thresholds_default["temperature_drop_c"])
+        ),
+        "strong_wind_level": float(
+            thresholds_raw.get("strong_wind_level", thresholds_default["strong_wind_level"])
+        ),
+        "bad_aqi": int(thresholds_raw.get("bad_aqi", thresholds_default["bad_aqi"])),
+        "strong_uv": float(thresholds_raw.get("strong_uv", thresholds_default["strong_uv"])),
+        "rain_probability_percent": min(
+            100,
+            max(
+                0,
+                int(
+                    thresholds_raw.get(
+                        "rain_probability_percent",
+                        thresholds_default["rain_probability_percent"],
+                    )
+                ),
+            ),
+        ),
+    }
+    return {
+        "enabled": bool(raw.get("enabled", defaults["enabled"])),
+        "mode": mode if mode in allowed_modes else defaults["mode"],
+        "normal_weather_action": (
+            normal_action if normal_action in allowed_normal else defaults["normal_weather_action"]
+        ),
+        "abnormal_weather_action": (
+            abnormal_action if abnormal_action in allowed_abnormal else defaults["abnormal_weather_action"]
+        ),
+        "short_message_max_chars": max(
+            8,
+            min(80, int(raw.get("short_message_max_chars", defaults["short_message_max_chars"]))),
+        ),
+        "record_skipped_history": bool(
+            raw.get("record_skipped_history", defaults["record_skipped_history"])
+        ),
+        "abnormal_rules": {
+            key: bool(rules_raw.get(key, value))
+            for key, value in rules_default.items()
+        },
+        "thresholds": thresholds,
+    }
+
+
+def normalize_startup(values: Any) -> dict[str, Any]:
+    raw = values if isinstance(values, dict) else {}
+    return {"enabled": bool(raw.get("enabled", False))}
+
+
+def normalize_tray(values: Any) -> dict[str, Any]:
+    defaults = asdict(TrayConfig())
+    raw = values if isinstance(values, dict) else {}
+    return {
+        "enabled": bool(raw.get("enabled", defaults["enabled"])),
+        "minimize_to_tray": bool(raw.get("minimize_to_tray", defaults["minimize_to_tray"])),
+        "close_to_tray": bool(raw.get("close_to_tray", defaults["close_to_tray"])),
+        "show_tray_notifications": bool(
+            raw.get("show_tray_notifications", defaults["show_tray_notifications"])
+        ),
+    }
+
+
+def normalize_do_not_disturb(values: Any) -> dict[str, Any]:
+    defaults = asdict(DoNotDisturbConfig())
+    raw = values if isinstance(values, dict) else {}
+    allowed_actions = {"delay", "skip", "tray_only", "force_send"}
+    action = str(raw.get("busy_action") or defaults["busy_action"])
+    delay_minutes = max(1, int(raw.get("delay_minutes", defaults["delay_minutes"])))
+    max_delay_minutes = max(
+        delay_minutes,
+        int(raw.get("max_delay_minutes", defaults["max_delay_minutes"])),
+    )
+    return {
+        "enabled": bool(raw.get("enabled", defaults["enabled"])),
+        "detect_fullscreen": bool(raw.get("detect_fullscreen", defaults["detect_fullscreen"])),
+        "detect_game_process": bool(
+            raw.get("detect_game_process", defaults["detect_game_process"])
+        ),
+        "detect_foreground_busy_app": bool(
+            raw.get("detect_foreground_busy_app", defaults["detect_foreground_busy_app"])
+        ),
+        "busy_action": action if action in allowed_actions else defaults["busy_action"],
+        "delay_minutes": delay_minutes,
+        "max_delay_minutes": max_delay_minutes,
+        "skip_if_still_busy": bool(
+            raw.get("skip_if_still_busy", defaults["skip_if_still_busy"])
+        ),
+        "process_blocklist": [
+            str(item).strip()
+            for item in (raw.get("process_blocklist") or defaults["process_blocklist"])
+            if str(item).strip()
+        ],
+        "window_title_keywords": [
+            str(item).strip()
+            for item in (raw.get("window_title_keywords") or defaults["window_title_keywords"])
+            if str(item).strip()
+        ],
+    }
+
+
 def _default_data() -> dict[str, Any]:
     return {
+        "config_version": CONFIG_VERSION,
         "app": {
             "name": APP_NAME,
             "version": APP_VERSION,
@@ -519,8 +737,16 @@ def _default_data() -> dict[str, Any]:
             {
                 "id": DEFAULT_TARGET_ID,
                 "name": DEFAULT_CONTACT,
+                "type": "friend",
                 "enabled": True,
                 "default": True,
+                "remark": "",
+                "send_mode": "normal",
+                "send_interval_seconds": 3,
+                "last_send_at": None,
+                "last_send_status": None,
+                "last_error_code": None,
+                "last_error_message": None,
             }
         ],
         "automation_jobs": [
@@ -563,6 +789,10 @@ def _default_data() -> dict[str, Any]:
             "daily_style": DEFAULT_DAILY_STYLE,
             "daily_prefix": DEFAULT_DAILY_PREFIX,
         },
+        "reminder_policy": normalize_reminder_policy({}),
+        "startup": normalize_startup({}),
+        "tray": normalize_tray({}),
+        "do_not_disturb": normalize_do_not_disturb({}),
         "release": {
             "package_name": "KangkangWeather",
             "version": APP_VERSION,
@@ -603,6 +833,10 @@ def normalize_config_data(raw: dict[str, Any]) -> dict[str, Any]:
     providers_raw = {**defaults["providers"], **raw.get("providers", {})}
     monitor_raw = {**defaults["monitor"], **raw.get("monitor", {})}
     message_raw = {**defaults["message"], **raw.get("message", {})}
+    reminder_policy_raw = normalize_reminder_policy(raw.get("reminder_policy"))
+    startup_raw = normalize_startup(raw.get("startup"))
+    tray_raw = normalize_tray(raw.get("tray"))
+    do_not_disturb_raw = normalize_do_not_disturb(raw.get("do_not_disturb"))
     release_raw = {**defaults["release"], **raw.get("release", {})}
     app_raw["version"] = APP_VERSION
     release_raw["version"] = APP_VERSION
@@ -700,8 +934,19 @@ def normalize_config_data(raw: dict[str, Any]) -> dict[str, Any]:
             {
                 "id": str(item.get("id") or _slug("target", name, index)),
                 "name": name,
+                "type": str(item.get("type") or item.get("target_type") or "friend"),
                 "enabled": bool(item.get("enabled", True)),
                 "default": bool(item.get("default", False)),
+                "remark": str(item.get("remark") or ""),
+                "send_mode": str(item.get("send_mode") or "normal"),
+                "send_interval_seconds": max(
+                    0,
+                    int(item.get("send_interval_seconds", 3) or 0),
+                ),
+                "last_send_at": item.get("last_send_at"),
+                "last_send_status": item.get("last_send_status"),
+                "last_error_code": item.get("last_error_code"),
+                "last_error_message": item.get("last_error_message"),
             }
         )
     if not targets:
@@ -741,6 +986,7 @@ def normalize_config_data(raw: dict[str, Any]) -> dict[str, Any]:
         jobs = list(defaults["automation_jobs"])
 
     return {
+        "config_version": CONFIG_VERSION,
         "app": app_raw,
         "locations": locations,
         "wechat_targets": targets,
@@ -774,6 +1020,10 @@ def normalize_config_data(raw: dict[str, Any]) -> dict[str, Any]:
             "daily_style": str(message_raw.get("daily_style") or DEFAULT_DAILY_STYLE),
             "daily_prefix": str(message_raw.get("daily_prefix") or DEFAULT_DAILY_PREFIX).strip(),
         },
+        "reminder_policy": reminder_policy_raw,
+        "startup": startup_raw,
+        "tray": tray_raw,
+        "do_not_disturb": do_not_disturb_raw,
         "release": release_raw,
     }
 
@@ -785,7 +1035,22 @@ def read_config_data(path: str | None, create_user_config: bool = False) -> dict
             return _default_data()
     else:
         config_path = Path(path)
-    return normalize_config_data(json.loads(config_path.read_text(encoding="utf-8-sig")))
+    try:
+        return normalize_config_data(json.loads(config_path.read_text(encoding="utf-8-sig")))
+    except json.JSONDecodeError:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup = config_path.with_name(f"{config_path.stem}.corrupt.{stamp}{config_path.suffix}")
+        try:
+            backup.write_text(config_path.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
+        except Exception:
+            pass
+        backup_config = config_path.with_name(f"{config_path.stem}.backup{config_path.suffix}")
+        if backup_config.exists():
+            try:
+                return normalize_config_data(json.loads(backup_config.read_text(encoding="utf-8-sig")))
+            except Exception:
+                pass
+        return _default_data()
 
 
 def write_config_data(path: str | None, data: dict[str, Any]) -> Path:
@@ -805,8 +1070,13 @@ def load_config(path: str | None, create_user_config: bool = False) -> AppConfig
     providers_raw = raw["providers"]
     monitor_raw = raw["monitor"]
     message_raw = raw["message"]
+    reminder_policy_raw = raw["reminder_policy"]
+    startup_raw = raw["startup"]
+    tray_raw = raw["tray"]
+    do_not_disturb_raw = raw["do_not_disturb"]
     release_raw = raw["release"]
     return AppConfig(
+        config_version=int(raw.get("config_version", CONFIG_VERSION)),
         app=AppSettings(
             name=str(app_raw.get("name", APP_NAME)),
             version=str(app_raw.get("version", APP_VERSION)),
@@ -871,6 +1141,41 @@ def load_config(path: str | None, create_user_config: bool = False) -> AppConfig
             daily_style=str(message_raw.get("daily_style") or DEFAULT_DAILY_STYLE),
             daily_prefix=str(message_raw.get("daily_prefix") or DEFAULT_DAILY_PREFIX).strip(),
         ),
+        reminder_policy=ReminderPolicyConfig(
+            enabled=bool(reminder_policy_raw.get("enabled", True)),
+            mode=str(reminder_policy_raw.get("mode", "smart")),
+            normal_weather_action=str(reminder_policy_raw.get("normal_weather_action", "full")),
+            abnormal_weather_action=str(reminder_policy_raw.get("abnormal_weather_action", "full")),
+            short_message_max_chars=int(reminder_policy_raw.get("short_message_max_chars", 30)),
+            record_skipped_history=bool(reminder_policy_raw.get("record_skipped_history", True)),
+            abnormal_rules=ReminderAbnormalRulesConfig(
+                **dict(reminder_policy_raw.get("abnormal_rules") or {})
+            ),
+            thresholds=ReminderThresholdsConfig(
+                **dict(reminder_policy_raw.get("thresholds") or {})
+            ),
+        ),
+        startup=StartupConfig(enabled=bool(startup_raw.get("enabled", False))),
+        tray=TrayConfig(
+            enabled=bool(tray_raw.get("enabled", True)),
+            minimize_to_tray=bool(tray_raw.get("minimize_to_tray", True)),
+            close_to_tray=bool(tray_raw.get("close_to_tray", True)),
+            show_tray_notifications=bool(tray_raw.get("show_tray_notifications", True)),
+        ),
+        do_not_disturb=DoNotDisturbConfig(
+            enabled=bool(do_not_disturb_raw.get("enabled", True)),
+            detect_fullscreen=bool(do_not_disturb_raw.get("detect_fullscreen", True)),
+            detect_game_process=bool(do_not_disturb_raw.get("detect_game_process", True)),
+            detect_foreground_busy_app=bool(
+                do_not_disturb_raw.get("detect_foreground_busy_app", True)
+            ),
+            busy_action=str(do_not_disturb_raw.get("busy_action", "delay")),
+            delay_minutes=int(do_not_disturb_raw.get("delay_minutes", 10)),
+            max_delay_minutes=int(do_not_disturb_raw.get("max_delay_minutes", 60)),
+            skip_if_still_busy=bool(do_not_disturb_raw.get("skip_if_still_busy", True)),
+            process_blocklist=list(do_not_disturb_raw.get("process_blocklist", [])),
+            window_title_keywords=list(do_not_disturb_raw.get("window_title_keywords", [])),
+        ),
         release=ReleaseConfig(
             package_name=str(release_raw.get("package_name", "KangkangWeather")),
             version=str(release_raw.get("version", APP_VERSION)),
@@ -881,6 +1186,7 @@ def load_config(path: str | None, create_user_config: bool = False) -> AppConfig
 
 def config_to_dict(config: AppConfig) -> dict[str, Any]:
     return {
+        "config_version": config.config_version,
         "app": asdict(config.app),
         "locations": [asdict(item) for item in config.locations],
         "wechat_targets": [asdict(item) for item in config.wechat_targets],
@@ -888,6 +1194,10 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
         "providers": asdict(config.providers),
         "monitor": asdict(config.monitor),
         "message": asdict(config.message),
+        "reminder_policy": asdict(config.reminder_policy),
+        "startup": asdict(config.startup),
+        "tray": asdict(config.tray),
+        "do_not_disturb": asdict(config.do_not_disturb),
         "release": asdict(config.release),
     }
 

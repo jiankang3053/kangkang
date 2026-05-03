@@ -1,0 +1,702 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Kangkang Weather v3.0 大版本更新计划</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17202a;
+      --muted: #5c6670;
+      --line: #dfe5eb;
+      --soft: #f6f8fa;
+      --panel: #ffffff;
+      --accent: #0f766e;
+      --accent-2: #2563eb;
+      --warn: #b45309;
+      --danger: #b91c1c;
+      --ok: #15803d;
+      --violet: #6d28d9;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: #eef2f6;
+      font-family: "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.65;
+    }
+    header {
+      background: linear-gradient(135deg, #102a43, #0f766e);
+      color: #fff;
+      padding: 42px 28px 34px;
+    }
+    header .wrap, main {
+      max-width: 1180px;
+      margin: 0 auto;
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: clamp(28px, 5vw, 48px);
+      letter-spacing: 0;
+      line-height: 1.15;
+    }
+    h2 {
+      margin: 0 0 16px;
+      font-size: 26px;
+      line-height: 1.25;
+    }
+    h3 {
+      margin: 22px 0 8px;
+      font-size: 18px;
+    }
+    p { margin: 0 0 12px; }
+    a { color: var(--accent-2); }
+    .subtitle {
+      max-width: 860px;
+      font-size: 17px;
+      opacity: .92;
+    }
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 20px;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid rgba(255,255,255,.28);
+      border-radius: 999px;
+      padding: 6px 12px;
+      background: rgba(255,255,255,.12);
+      font-size: 13px;
+    }
+    main {
+      padding: 24px 18px 56px;
+    }
+    .toc {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+    .toc a {
+      display: block;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      text-decoration: none;
+      color: var(--ink);
+    }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 22px;
+      margin: 16px 0;
+      box-shadow: 0 10px 28px rgba(15, 23, 42, .05);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 14px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 14px;
+      background: var(--soft);
+    }
+    .card h3 { margin-top: 0; }
+    .tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      color: #fff;
+      background: var(--accent);
+      margin-right: 6px;
+      white-space: nowrap;
+    }
+    .tag.warn { background: var(--warn); }
+    .tag.danger { background: var(--danger); }
+    .tag.ok { background: var(--ok); }
+    .tag.info { background: var(--accent-2); }
+    .tag.violet { background: var(--violet); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0 4px;
+      overflow-wrap: anywhere;
+    }
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      border: 1px solid var(--line);
+      padding: 10px;
+      font-size: 14px;
+    }
+    th {
+      background: #edf3f7;
+      font-weight: 700;
+    }
+    ul, ol { padding-left: 21px; margin: 8px 0 12px; }
+    li { margin: 4px 0; }
+    code {
+      background: #edf2f7;
+      padding: 2px 5px;
+      border-radius: 5px;
+      font-family: Consolas, "Cascadia Mono", monospace;
+      font-size: .93em;
+    }
+    pre {
+      white-space: pre-wrap;
+      background: #111827;
+      color: #e5e7eb;
+      padding: 14px;
+      border-radius: 10px;
+      overflow: auto;
+    }
+    .note {
+      border-left: 4px solid var(--accent);
+      padding: 10px 12px;
+      background: #ecfdf5;
+      border-radius: 8px;
+      margin: 12px 0;
+    }
+    .warning {
+      border-left: 4px solid var(--warn);
+      padding: 10px 12px;
+      background: #fff7ed;
+      border-radius: 8px;
+      margin: 12px 0;
+    }
+    .danger-box {
+      border-left: 4px solid var(--danger);
+      padding: 10px 12px;
+      background: #fef2f2;
+      border-radius: 8px;
+      margin: 12px 0;
+    }
+    .timeline {
+      display: grid;
+      gap: 12px;
+    }
+    .phase {
+      display: grid;
+      grid-template-columns: 150px 1fr;
+      gap: 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--soft);
+      padding: 12px;
+    }
+    .phase strong { display: block; }
+    .small { color: var(--muted); font-size: 13px; }
+    footer {
+      max-width: 1180px;
+      margin: 0 auto 50px;
+      padding: 0 18px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    @media (max-width: 720px) {
+      section { padding: 16px; border-radius: 8px; }
+      .phase { grid-template-columns: 1fr; }
+      th, td { font-size: 13px; padding: 8px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <h1>Kangkang Weather v3.0 大版本更新计划</h1>
+      <p class="subtitle">基于网上资料、GitHub 同类项目、官方文档和本地工程只读审查整理。目标不是再打一个补丁，而是把“能用”升级成“别人电脑上也能解释、能恢复、能长期运行”的桌面自动化产品。</p>
+      <div class="meta">
+        <span class="pill">生成日期：2026-05-03</span>
+        <span class="pill">当前本地版本：v2.4.3</span>
+        <span class="pill">范围：计划文档，不改业务代码</span>
+        <span class="pill">重点：微信 UI 自动化、定时可靠性、天气质量、上线交付</span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <nav class="toc">
+      <a href="#summary">1. 总体判断</a>
+      <a href="#research">2. 外部调研结论</a>
+      <a href="#current">3. 本地工程现状</a>
+      <a href="#risks">4. 潜在 Bug 与触发条件</a>
+      <a href="#vision">5. v3 产品目标</a>
+      <a href="#architecture">6. 架构升级方案</a>
+      <a href="#roadmap">7. 分阶段路线图</a>
+      <a href="#tests">8. 测试与上线门槛</a>
+      <a href="#sources">9. 参考资料</a>
+    </nav>
+
+    <section id="summary">
+      <h2>1. 总体判断</h2>
+      <div class="grid">
+        <div class="card">
+          <h3><span class="tag danger">P0</span>最大不确定性：微信客户端 UI</h3>
+          <p>这个软件的核心不是天气，而是“通过官方 Windows 微信窗口发出去”。由于没有公开发消息 API，只能走 UIAutomation/键盘/剪贴板/窗口焦点，这条路天然会受微信版本、权限级别、锁屏、弹窗、缩放、输入法、控件树变化影响。</p>
+        </div>
+        <div class="card">
+          <h3><span class="tag warn">P1</span>当前最该升级：任务与事件台账</h3>
+          <p>v2.4.3 已经能做天气、发送、记录查询历史，但“为什么没有发”仍散落在状态文件、任务计划日志、app.log、daily_task.log 里。v3 应该把所有自动化决策做成统一事件流。</p>
+        </div>
+        <div class="card">
+          <h3><span class="tag info">P1</span>产品形态要从工具变成控制台</h3>
+          <p>现在已经有桌面 Tk、网页控制台、托盘、安装包、计划任务。下一步不是继续加按钮，而是统一成“任务控制台”：每个任务都有时间线、健康状态、失败原因、重试按钮和下一次计划。</p>
+        </div>
+        <div class="card">
+          <h3><span class="tag ok">优势</span>基础已经够厚</h3>
+          <p>已有全国地址、天气多源合并、查询记录、诊断包、微信发送测试、PyInstaller 打包、计划任务脚本、37 个自动测试。v3 可以站在这个基础上做工程化，而不是推倒重来。</p>
+        </div>
+      </div>
+      <div class="note">
+        <strong>一句话方向：</strong>v3.0 建议命名为 <code>Kangkang Weather Reliability Edition</code>，核心卖点是“可解释的微信天气自动化”：每次该不该发、有没有发、为什么失败，都能在界面里一眼看懂。
+      </div>
+    </section>
+
+    <section id="research">
+      <h2>2. 外部调研结论</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>方向</th>
+            <th>调研发现</th>
+            <th>对本软件的启发</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>微信自动化生态</td>
+            <td><code>cluic/wxauto</code> 明确是 Windows 微信客户端 UIAutomation 自动化，README 也声明仅用于 UIAutomation 学习交流。<code>wxauto4</code> 仓库页面直接写“停止更新”。另一个 <code>pywechat</code> 项目也强调基于 pywinauto/pure UIAutomation，并按微信版本区分支持范围。</td>
+            <td>不要押注单一第三方微信库。v3 应该做可插拔后端：当前自研 pywinauto-session 是主后端，未来可接 wxauto/pywechat 作为可选适配器，并以“微信版本指纹”决定策略。</td>
+          </tr>
+          <tr>
+            <td>Windows UIAutomation 边界</td>
+            <td>Microsoft UI Automation 是桌面辅助技术/自动测试框架，可以访问和操作 UI 元素；但官方说明不同用户通过 Run as 启动的进程之间不能通信。SendInput 还受 UIPI 限制，只能向相同或更低完整性级别的应用注入输入。</td>
+            <td>v3 必须把“权限同级运行”做成硬性自检；不要承诺锁屏、未登录、不同权限、完全后台可发。界面里要明确区分“环境不支持”和“程序 Bug”。</td>
+          </tr>
+          <tr>
+            <td>天气数据</td>
+            <td>Open-Meteo Forecast API 通过经纬度返回小时和每日预报，默认 7 天，最多 16 天；daily 聚合需要 timezone。它适合无 Key 开箱，但不能保证单源永远稳定。</td>
+            <td>当前多模型合并是正确方向。v3 可加入“数据质量分”、逐源耗时、最近预测对比、灾害/暴雨规则，以及可选中国本土天气源适配层。</td>
+          </tr>
+          <tr>
+            <td>托盘与桌面常驻</td>
+            <td>pystray 文档说明 <code>Icon.run()</code> 是阻塞调用，和其他事件循环集成要小心；Windows 默认后端支持较完整。</td>
+            <td>v3 需要单进程生命周期管理：托盘、服务、桌面窗口、网页控制台不要各自管理一套状态。建议拆成本地守护进程 + UI 客户端。</td>
+          </tr>
+          <tr>
+            <td>打包分发</td>
+            <td>PyInstaller 官方支持 <code>--onefile --windowed</code>；社区长期反馈 onefile/未签名 exe 容易触发 SmartScreen 或杀软误报。</td>
+            <td>v3 需要双轨交付：安装版优先 onedir 或 MSI/Inno，便携版保留 zip；长期要做代码签名、版本更新、校验、崩溃日志。</td>
+          </tr>
+          <tr>
+            <td>计划任务</td>
+            <td>Windows 计划任务支持 Daily/At 触发，也支持 StartWhenAvailable；交互式任务必须依赖已登录用户会话。本机刚发生的 0x2 就是脚本路径丢失的典型问题。</td>
+            <td>v3 应由软件自己创建、验证和修复计划任务，并把 LastRunTime、LastTaskResult、NextRunTime 直接显示出来。错过固定时间应可补偿，不应只有 70 秒窗口。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="current">
+      <h2>3. 本地工程现状</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>代码规模</h3>
+          <ul>
+            <li><code>web_console.html</code>：1494 行，单文件前端。</li>
+            <li><code>wechat.py</code>：1318 行，微信窗口识别、搜索、输入、发送、诊断都在一起。</li>
+            <li><code>server.py</code>：1181 行，本地 API + 页面回退 + 配置管理。</li>
+            <li><code>monitor.py</code>：889 行，轮询、固定发送、风险判断、状态文件。</li>
+            <li><code>weather.py</code>：801 行，多源天气、缓存、历史记录、模板。</li>
+            <li><code>desktop.py</code>：723 行，Tk 桌面端。</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>当前配置快照</h3>
+          <ul>
+            <li>版本：<code>2.4.3</code></li>
+            <li>地址：1 个，默认嘉鱼县。</li>
+            <li>微信目标：1 个，当前为湘楠。</li>
+            <li>自动任务：1 个，固定发送 <code>06:00</code>，活动窗口 <code>06:00-22:00</code>。</li>
+            <li>天气查询记录：本机已有 54 条。</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>测试基线</h3>
+          <ul>
+            <li>当前自动测试：37 个，通过。</li>
+            <li>覆盖：配置迁移、天气合并、时间段、消息模板、微信搜索/发送 mock、API、查询记录。</li>
+            <li>缺口：真实 Windows 微信矩阵测试、锁屏/睡眠/用户注销、不同微信版本、不同 DPI/输入法、杀软拦截。</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>交付产物</h3>
+          <ul>
+            <li><code>dist/KangkangWeather-v2.4.3.zip</code>：约 42.3 MB。</li>
+            <li><code>dist/KangkangWeatherSetup-v2.4.3.exe</code>：约 54.5 MB。</li>
+            <li><code>SHA256SUMS-v2.4.3.txt</code>：已生成。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="risks">
+      <h2>4. 潜在 Bug 与触发条件</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>优先级</th>
+            <th>风险/问题</th>
+            <th>触发条件</th>
+            <th>建议 v3 处理</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="tag danger">P0</span></td>
+            <td>固定发送窗口过窄</td>
+            <td><code>_fixed_due_times</code> 目前只接受 0-70 秒窗口。电脑睡眠、服务未运行、启动慢、天气源慢、计划任务延迟都会错过固定日报。</td>
+            <td>改为“任务账本”：计划时间、最晚补偿时间、是否已发送、失败原因分开记录。默认补偿窗口可设 30-120 分钟。</td>
+          </tr>
+          <tr>
+            <td><span class="tag danger">P0</span></td>
+            <td>微信 UI 自动化无法在锁屏/注销/不同权限下稳定运行</td>
+            <td>微信未登录、Windows 锁屏、任务跑在非交互会话、微信管理员权限而程序普通权限、或反过来。</td>
+            <td>启动前做环境门禁：会话类型、桌面是否可交互、权限级别、微信窗口 PID/完整性级别、输入法状态。失败时不尝试发送，只显示红色原因。</td>
+          </tr>
+          <tr>
+            <td><span class="tag danger">P0</span></td>
+            <td>微信版本更新导致控件标识变化</td>
+            <td>微信 3.9/4.0/4.1 的 class、automation_id、搜索结果结构不同；官方更新后控件树可能变。</td>
+            <td>新增“微信版本指纹库”：按 exe 版本、窗口 class、控件树样本选择策略；诊断包自动附 UIA 控件快照。</td>
+          </tr>
+          <tr>
+            <td><span class="tag warn">P1</span></td>
+            <td>状态 JSON 可能并发写入冲突</td>
+            <td>托盘服务、桌面端、计划任务、手动 CLI 同时运行，都可能读写 <code>weather_poll_state.json</code>、查询历史、缓存。</td>
+            <td>引入 SQLite 或 JSON 文件锁。推荐 SQLite：jobs、runs、sends、weather_fetches、diagnostics 统一落表。</td>
+          </tr>
+          <tr>
+            <td><span class="tag warn">P1</span></td>
+            <td>“为什么没发”仍需要翻多个文件</td>
+            <td>失败可能在计划任务、服务没启动、天气源、微信目标、输入框、发送键、免打扰、重复去重等任一层。</td>
+            <td>做“发送时间线”：计划产生、到点检查、天气获取、规则判断、微信打开、正文输入、提交验证、最终结果，一条链路显示。</td>
+          </tr>
+          <tr>
+            <td><span class="tag warn">P1</span></td>
+            <td>本地 API 缺少访问保护</td>
+            <td>服务绑定 127.0.0.1，相对安全，但本机恶意网页/插件仍可能尝试打本地接口发消息。</td>
+            <td>首次启动生成本地 token；所有写接口要求 token；Web 页面同源注入 token；诊断包不暴露 token。</td>
+          </tr>
+          <tr>
+            <td><span class="tag warn">P1</span></td>
+            <td>目标名称精确匹配与真实微信显示不一致</td>
+            <td>备注名、群名、同名好友、搜索结果包含公众号/服务号、群聊后缀、emoji、繁简体。</td>
+            <td>新增目标绑定流程：搜索候选列表展示给用户确认，保存微信目标指纹（显示名、类型、最近会话标题、可选备注）。</td>
+          </tr>
+          <tr>
+            <td><span class="tag warn">P1</span></td>
+            <td>输入框坐标聚焦仍存在误点风险</td>
+            <td>聊天输入框 <code>click_input</code> 失败后会尝试输入框中心坐标，遇到缩放/窗口异常可能点偏。</td>
+            <td>默认彻底关闭所有坐标点击；把坐标模式变成“高级开关 + 二次确认 + 只在测试模式可启用”。</td>
+          </tr>
+          <tr>
+            <td><span class="tag info">P2</span></td>
+            <td>Web/Tk UI 重复实现</td>
+            <td>桌面设置、网页控制台、首次设置都各自维护交互逻辑，后续每加一个功能要改多处。</td>
+            <td>把 UI 合并到一个 Web 控制台，用 pywebview 或默认浏览器承载；Tk 只保留极简启动/错误窗口。</td>
+          </tr>
+          <tr>
+            <td><span class="tag info">P2</span></td>
+            <td>打包 onefile 可能慢启动/误报</td>
+            <td>PyInstaller onefile 启动时解压，安全软件可能拦截；首次启动体验差。</td>
+            <td>安装版改 onedir/MSI/Inno；便携版保留 onefile 或 onedir 两种；加入代码签名和 Microsoft Defender false-positive 提交流程。</td>
+          </tr>
+          <tr>
+            <td><span class="tag info">P2</span></td>
+            <td>天气风险规则仍偏静态</td>
+            <td>不同城市、季节、用户偏好不同；“多源分歧”可能频繁触发提醒疲劳。</td>
+            <td>给每类提醒加冷却时间、重要程度、用户反馈按钮；多源分歧只作为附加提示，不单独触发频繁补发。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="vision">
+      <h2>5. v3 产品目标</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>目标 1：别人电脑上可解释</h3>
+          <p>失败不再只显示“发送失败”，而是告诉用户：微信没登录、权限不一致、目标没匹配、固定时间错过、天气源超时、还是键盘提交没生效。</p>
+        </div>
+        <div class="card">
+          <h3>目标 2：自动化任务可运营</h3>
+          <p>每个任务都有“计划、执行、结果、下一步”。固定日报和风险补发不再混在一起，而是分别有自己的运行策略和日志。</p>
+        </div>
+        <div class="card">
+          <h3>目标 3：跨微信版本更稳</h3>
+          <p>不是写死一套控件路径，而是有版本检测、控件树采样、策略选择、失败回退、人工绑定。</p>
+        </div>
+        <div class="card">
+          <h3>目标 4：上线交付像产品</h3>
+          <p>安装包、便携包、更新说明、校验、诊断包、日志、自动修复计划任务、开机自启，全套闭环。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="architecture">
+      <h2>6. 架构升级方案</h2>
+
+      <h3>6.1 新架构分层</h3>
+      <pre>
+Kangkang Weather v3
+├─ Core Domain
+│  ├─ Location / Weather / Message Template / Alert Rule
+│  ├─ Automation Job / Run Ledger / Send Ledger
+│  └─ Config Migration / Privacy Policy
+├─ Weather Engine
+│  ├─ Open-Meteo Provider
+│  ├─ Fallback Provider
+│  ├─ Data Quality Score
+│  └─ Cache + Fetch History
+├─ WeChat Automation Engine
+│  ├─ Backend Registry
+│  ├─ WeChat Fingerprint Detector
+│  ├─ Target Binding
+│  ├─ Open Chat State Machine
+│  └─ Send State Machine
+├─ Scheduler Engine
+│  ├─ Fixed Daily Runs
+│  ├─ Interval Risk Checks
+│  ├─ Missed Run Recovery
+│  └─ Windows Task Scheduler Manager
+├─ Local Service
+│  ├─ Token-protected API
+│  ├─ Event Stream
+│  └─ Diagnostic Export
+└─ UI
+   ├─ Web Control Console
+   ├─ Tray Menu
+   └─ Installer / First-run Wizard
+      </pre>
+
+      <h3>6.2 微信自动化引擎 v3</h3>
+      <table>
+        <thead><tr><th>模块</th><th>设计</th><th>验收标准</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>微信版本指纹</td>
+            <td>记录 exe 路径、文件版本、窗口 class、主窗口标题、搜索框 automation_id、输入框 automation_id、当前会话标题控件、发送按钮控件。</td>
+            <td>诊断页显示“已识别微信 3.x/4.x/未知”；未知版本进入兼容模式。</td>
+          </tr>
+          <tr>
+            <td>目标绑定</td>
+            <td>用户输入好友名后，软件展示搜索候选：好友/群/公众号类型、显示名、是否可输入。用户确认后保存绑定。</td>
+            <td>同名目标不会误发；找不到目标时给出候选和建议。</td>
+          </tr>
+          <tr>
+            <td>打开会话状态机</td>
+            <td>当前会话匹配 → 左侧会话 → 搜索框 UIA → Unicode 输入 → 候选精确匹配 → 打开后标题校验。每一步写入事件表。</td>
+            <td>失败报告能定位在具体阶段，且不会继续粘贴正文。</td>
+          </tr>
+          <tr>
+            <td>发送状态机</td>
+            <td>聚焦输入框 → 直接写入/剪贴板/Unicode → 内容确认 → Enter/原生 Enter/Ctrl+Enter → 输入框清空或消息出现验证。</td>
+            <td>默认不坐标点击；失败时输入框残留提示用户清理。</td>
+          </tr>
+          <tr>
+            <td>人工协助模式</td>
+            <td>当自动搜索失败时，提示用户手动点到聊天窗口，然后软件只做“当前会话校验 + 发送”。</td>
+            <td>复杂微信版本也能通过半自动方式稳定使用。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>6.3 调度与任务系统</h3>
+      <ul>
+        <li>固定日报从“瞬时触发”改成“计划运行记录”：<code>scheduled_at</code>、<code>due_after</code>、<code>deadline_at</code>、<code>status</code>、<code>attempt_count</code>。</li>
+        <li>默认补偿策略：如果 06:00 没运行，06:00-08:00 之间启动时补发一次，并标注“补发”。</li>
+        <li>风险轮询与固定日报拆表：不要把 <code>last_check_at</code> 同时当作轮询和日报状态。</li>
+        <li>计划任务由软件创建和修复：检测脚本路径、exe 路径、工作目录、LastTaskResult、NextRunTime。</li>
+        <li>增加“下次运行预测”：固定日报、轮询检查、开机自启、计划任务都在同一视图展示。</li>
+      </ul>
+
+      <h3>6.4 数据存储</h3>
+      <div class="warning">
+        当前 JSON 文件适合快速迭代，但 v3 多进程/计划任务/托盘/桌面并存时会有并发写入风险。建议迁移到 SQLite。
+      </div>
+      <table>
+        <thead><tr><th>表</th><th>用途</th></tr></thead>
+        <tbody>
+          <tr><td><code>settings</code></td><td>全局配置、版本、迁移状态。</td></tr>
+          <tr><td><code>locations</code></td><td>地址、行政区、内部坐标、数据源。</td></tr>
+          <tr><td><code>wechat_targets</code></td><td>目标名称、绑定状态、最后验证时间、微信版本指纹。</td></tr>
+          <tr><td><code>automation_jobs</code></td><td>任务配置：地址、目标、时间段、固定点、提醒规则。</td></tr>
+          <tr><td><code>job_runs</code></td><td>每次任务运行：类型、计划时间、开始/结束、状态、原因。</td></tr>
+          <tr><td><code>send_attempts</code></td><td>每次微信发送尝试：阶段、诊断、错误分类、是否送达。</td></tr>
+          <tr><td><code>weather_fetches</code></td><td>每次天气查询：源、耗时、失败源、缓存、质量分。</td></tr>
+          <tr><td><code>diagnostic_events</code></td><td>统一事件流，供 UI 时间线和诊断包使用。</td></tr>
+        </tbody>
+      </table>
+
+      <h3>6.5 UI/UX 重构</h3>
+      <ul>
+        <li>统一成 Web 控制台，桌面端只是启动和承载；减少 Tk 与 HTML 双维护。</li>
+        <li>首页展示“今天有没有发”：最近固定日报、最近风险提醒、下一次计划、微信健康、天气源健康。</li>
+        <li>任务详情页做时间线：计划生成 → 天气查询 → 规则判断 → 微信打开 → 发送 → 结果。</li>
+        <li>设置页变成向导式：地址、微信目标、发送时间、提醒规则、测试发送、完成。</li>
+        <li>高级设置默认可见但分组清楚：不要藏起来，也不要堆成表单迷宫。</li>
+      </ul>
+
+      <h3>6.6 天气与提醒升级</h3>
+      <ul>
+        <li>给每次天气快照计算 <code>quality_score</code>：成功源数量、失败源、分歧程度、是否缓存、耗时。</li>
+        <li>多源分歧不单独频繁触发，作为风险说明附在其它提醒后。</li>
+        <li>新增体感温度、风力、空气质量/紫外线可选模块。</li>
+        <li>消息模板支持：极简、标准、通勤、老人关怀、农业/户外。</li>
+        <li>允许用户给提醒反馈“太吵/有用/漏报”，后续调整阈值。</li>
+      </ul>
+
+      <h3>6.7 安全与隐私</h3>
+      <ul>
+        <li>本地 API 增加随机 token；写操作全部校验。</li>
+        <li>诊断包默认脱敏微信好友名，只保留首字或哈希；用户可勾选“包含完整目标名”。</li>
+        <li>不保存微信聊天正文，不读取无关聊天记录。</li>
+        <li>安装时明确说明：需要官方 Windows 微信已登录，发送时会短暂切到前台。</li>
+      </ul>
+    </section>
+
+    <section id="roadmap">
+      <h2>7. 分阶段路线图</h2>
+      <div class="timeline">
+        <div class="phase">
+          <div><strong>v3.0-alpha</strong><span class="small">可靠性骨架</span></div>
+          <div>
+            <ul>
+              <li>SQLite 事件账本：job_runs、send_attempts、weather_fetches。</li>
+              <li>固定日报补偿窗口，错过 06:00 可在设定时限内补发。</li>
+              <li>计划任务管理器：创建、修复、手动触发、显示 LastTaskResult。</li>
+              <li>本地 API token。</li>
+              <li>“为什么没发”时间线页面。</li>
+            </ul>
+          </div>
+        </div>
+        <div class="phase">
+          <div><strong>v3.0-beta</strong><span class="small">微信适配增强</span></div>
+          <div>
+            <ul>
+              <li>微信版本指纹库和控件树快照。</li>
+              <li>目标绑定向导，展示候选结果并确认保存。</li>
+              <li>人工协助模式。</li>
+              <li>完全禁用默认坐标点击，坐标模式改高级开关。</li>
+              <li>真实微信矩阵测试：微信 3.9、4.0、4.1；Win10/Win11；100%/125%/150% 缩放。</li>
+            </ul>
+          </div>
+        </div>
+        <div class="phase">
+          <div><strong>v3.0-rc</strong><span class="small">上线交付</span></div>
+          <div>
+            <ul>
+              <li>Web 控制台重构，桌面端只承载/启动。</li>
+              <li>安装包改良：开始菜单、卸载、计划任务注册、开机自启管理。</li>
+              <li>诊断包 v2：日志、事件账本、控件树、计划任务、系统信息一键导出。</li>
+              <li>更新 README、Release Notes、故障排查手册。</li>
+              <li>如果要分发给多人，准备代码签名或 Defender false-positive 提交流程。</li>
+            </ul>
+          </div>
+        </div>
+        <div class="phase">
+          <div><strong>v3.1</strong><span class="small">体验升级</span></div>
+          <div>
+            <ul>
+              <li>多模板、多联系人、多地址任务组合。</li>
+              <li>提醒反馈学习：减少打扰。</li>
+              <li>天气质量图表和最近预测变化图。</li>
+              <li>可选通知渠道：桌面通知、企业微信/钉钉/Webhook，仅作为备用，不替代个人微信。</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tests">
+      <h2>8. 测试与上线门槛</h2>
+      <table>
+        <thead>
+          <tr><th>测试类型</th><th>v3 必须覆盖</th><th>通过标准</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>单元测试</td>
+            <td>调度补偿、SQLite 迁移、天气质量分、提醒冷却、目标绑定、错误分类。</td>
+            <td>核心模块覆盖率 80%+，关键状态机分支全覆盖。</td>
+          </tr>
+          <tr>
+            <td>UI 自动化 mock 测试</td>
+            <td>微信窗口消失、搜索框缺失、候选不匹配、权限不一致、输入框不可读、发送后未清空。</td>
+            <td>每类失败都有明确错误分类和用户建议。</td>
+          </tr>
+          <tr>
+            <td>真实微信烟测</td>
+            <td>文件传输助手/微信快存：打开会话、测试消息、完整天气、固定日报 dry-run。</td>
+            <td>Win10/Win11 各至少一台；微信主流版本各至少一台。</td>
+          </tr>
+          <tr>
+            <td>计划任务测试</td>
+            <td>准点、错过后补发、用户未登录、电脑睡眠、手动触发、脚本路径丢失。</td>
+            <td>界面能解释所有失败；任务修复按钮可恢复。</td>
+          </tr>
+          <tr>
+            <td>打包测试</td>
+            <td>便携版、安装版、无源码路径运行、卸载、升级旧配置、杀软扫描。</td>
+            <td>干净 Windows 账号首次运行可完成设置；zip 内不缺脚本和 README。</td>
+          </tr>
+          <tr>
+            <td>安全测试</td>
+            <td>本地 API token、诊断包脱敏、配置导出、非同源网页调用。</td>
+            <td>外部网页不能直接触发发微信；诊断包不泄露完整聊天内容。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="danger-box">
+        <strong>上线红线：</strong>只要“固定日报没发但界面无法解释原因”还存在，就不应称为上线版。v3 的第一目标不是更多功能，而是把每次自动化行为变成可追踪、可恢复、可复盘。
+      </div>
+    </section>
+
+    <section id="sources">
+      <h2>9. 参考资料</h2>
+      <ul>
+        <li><a href="https://github.com/cluic/wxauto">cluic/wxauto GitHub</a>：Windows 微信客户端 UIAutomation 自动化；README 包含用途和免责声明。</li>
+        <li><a href="https://github.com/cluic/wxauto4">cluic/wxauto4 GitHub</a>：适配微信 4.0 的仓库，页面显示“停止更新”。</li>
+        <li><a href="https://github.com/Hello-Mr-Crab/pywechat">Hello-Mr-Crab/pywechat GitHub</a>：基于 pywinauto 的 Windows 微信自动化项目，按微信版本声明支持范围。</li>
+        <li><a href="https://github.com/pywinauto/pywinauto">pywinauto GitHub</a>：Windows GUI 自动化库，支持 Win32 和 MS UI Automation 后端。</li>
+        <li><a href="https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-uiautomationoverview">Microsoft UI Automation Overview</a>：UIAutomation 能访问/操作桌面 UI，但不同 Run as 用户进程之间有限制。</li>
+        <li><a href="https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput">Microsoft SendInput 文档</a>：SendInput 受 UIPI 限制，只能向相同或更低完整性级别应用注入输入。</li>
+        <li><a href="https://open-meteo.com/en/docs">Open-Meteo Forecast API 文档</a>：经纬度、hourly/daily、timezone、forecast_days 等参数说明。</li>
+        <li><a href="https://pyinstaller.org/en/latest/usage.html">PyInstaller 使用文档</a>：onefile/windowed 打包和多平台构建说明。</li>
+        <li><a href="https://pystray.readthedocs.io/en/latest/usage.html">pystray 文档</a>：托盘图标、菜单、事件循环集成。</li>
+        <li><a href="https://learn.microsoft.com/bg-bg/powershell/module/scheduledtasks/new-scheduledtasktrigger?view=windowsserver2025-ps">Microsoft New-ScheduledTaskTrigger 文档</a>：计划任务 daily/time-based trigger。</li>
+        <li><a href="https://learn.microsoft.com/en-us/windows/win32/taskschd/principal-logontype">Microsoft Task Scheduler LogonType 文档</a>：InteractiveToken 任务依赖用户已登录交互会话。</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer>
+    本文档由 Codex 基于当前工程与公开资料整理。它是 v3 规划草案，不代表已经完成实现。建议下一步先评审 P0/P1 风险和路线图优先级，再进入代码迭代。
+  </footer>
+</body>
+</html>

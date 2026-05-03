@@ -1,7 +1,8 @@
 {
+  "config_version": 3,
   "app": {
     "name": "KangkangWeather",
-    "version": "3.1.1",
+    "version": "3.6.0",
     "host": "127.0.0.1",
     "port": 8766,
     "open_browser_on_start": true,
@@ -28,8 +29,16 @@
     {
       "id": "xiangnan",
       "name": "湘楠",
+      "type": "friend",
       "enabled": true,
-      "default": true
+      "default": true,
+      "remark": "",
+      "send_mode": "normal",
+      "send_interval_seconds": 3,
+      "last_send_at": null,
+      "last_send_status": null,
+      "last_error_code": null,
+      "last_error_message": null
     }
   ],
   "automation_jobs": [
@@ -84,9 +93,77 @@
     "daily_style": "segmented_brief",
     "daily_prefix": ""
   },
+  "reminder_policy": {
+    "enabled": true,
+    "mode": "smart",
+    "normal_weather_action": "full",
+    "abnormal_weather_action": "full",
+    "short_message_max_chars": 30,
+    "record_skipped_history": true,
+    "abnormal_rules": {
+      "rain": true,
+      "storm": true,
+      "temperature_drop": true,
+      "high_temperature": true,
+      "low_temperature": true,
+      "strong_wind": true,
+      "bad_air_quality": true,
+      "strong_uv": true
+    },
+    "thresholds": {
+      "high_temperature_c": 35.0,
+      "low_temperature_c": 5.0,
+      "temperature_drop_c": 6.0,
+      "strong_wind_level": 5.0,
+      "bad_aqi": 100,
+      "strong_uv": 6.0,
+      "rain_probability_percent": 50
+    }
+  },
+  "startup": {
+    "enabled": false
+  },
+  "tray": {
+    "enabled": true,
+    "minimize_to_tray": true,
+    "close_to_tray": true,
+    "show_tray_notifications": true
+  },
+  "do_not_disturb": {
+    "enabled": true,
+    "detect_fullscreen": true,
+    "detect_game_process": true,
+    "detect_foreground_busy_app": true,
+    "busy_action": "delay",
+    "delay_minutes": 10,
+    "max_delay_minutes": 60,
+    "skip_if_still_busy": true,
+    "process_blocklist": [
+      "steam.exe",
+      "steamwebhelper.exe",
+      "wegame.exe",
+      "LeagueClient.exe",
+      "League of Legends.exe",
+      "cs2.exe",
+      "valorant.exe",
+      "GenshinImpact.exe",
+      "YuanShen.exe",
+      "PotPlayerMini64.exe",
+      "PotPlayerMini.exe",
+      "vlc.exe",
+      "obs64.exe",
+      "POWERPNT.EXE"
+    ],
+    "window_title_keywords": [
+      "Presentation",
+      "Slide Show",
+      "全屏",
+      "演示"
+    ]
+  },
   "release": {
     "package_name": "KangkangWeather",
-    "version": "3.1.1",
+    "version": "3.6.0",
     "output_dir": "dist"
   }
 }

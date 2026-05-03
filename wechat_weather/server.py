@@ -8,6 +8,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import re
+import sys
+import time
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -18,10 +20,15 @@ from .config import (
     load_config,
     normalize_active_windows,
     normalize_alert_options,
+    normalize_do_not_disturb,
     normalize_fixed_times,
+    normalize_reminder_policy,
+    normalize_startup,
+    normalize_tray,
     read_config_data,
     write_config_data,
 )
+from .busy_detector import BusyDetector
 from .compat import build_compat_report, export_diagnostics_package
 from .error_analysis import analyze_error
 from .monitor import WeatherMonitor
@@ -35,6 +42,15 @@ from .regions import (
     search_regions,
 )
 from .scheduler import remove_scheduler_tasks, repair_scheduler_tasks, scheduler_status
+from .send_batch import (
+    SendTaskLock,
+    append_send_history,
+    apply_send_result,
+    create_send_batch,
+    read_send_history,
+    select_send_targets,
+)
+from .startup_manager import StartupManager
 from .migration import export_migration_package, inspect_migration_package
 from .run_trace import append_step, new_run_id, read_runs, read_steps
 from .updater import check_latest_release
@@ -582,11 +598,30 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
                 raise KeyError(f"没有找到微信好友：{item_id}")
         if "name" in body:
             item["name"] = str(body["name"]).strip()
+        if "type" in body or "target_type" in body:
+            item["type"] = str(body.get("type") or body.get("target_type") or "friend")
         if "enabled" in body:
             item["enabled"] = _bool_value(body, "enabled", True)
         else:
             item.setdefault("enabled", True)
         item.setdefault("name", "未命名好友")
+        item.setdefault("type", "friend")
+        if "remark" in body:
+            item["remark"] = str(body.get("remark") or "")
+        else:
+            item.setdefault("remark", "")
+        if "send_mode" in body:
+            item["send_mode"] = str(body.get("send_mode") or "normal")
+        else:
+            item.setdefault("send_mode", "normal")
+        if "send_interval_seconds" in body:
+            item["send_interval_seconds"] = max(0, int(body.get("send_interval_seconds") or 0))
+        else:
+            item.setdefault("send_interval_seconds", 3)
+        item.setdefault("last_send_at", None)
+        item.setdefault("last_send_status", None)
+        item.setdefault("last_error_code", None)
+        item.setdefault("last_error_message", None)
         item.setdefault("default", False)
         if _bool_value(body, "default", False) or len(targets) == 1:
             self._set_default(targets, item_id)
@@ -698,6 +733,48 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
             message.setdefault("daily_prefix", "")
         self._save_config_data(data)
         return asdict(self.server.app_config.message)
+
+    def _save_system_settings(self, body: dict[str, Any]) -> dict[str, Any]:
+        data = self._load_config_data_for_write()
+        if "reminder_policy" in body:
+            data["reminder_policy"] = normalize_reminder_policy(body.get("reminder_policy"))
+        if "startup" in body:
+            startup = normalize_startup(body.get("startup"))
+            manager = StartupManager(self.server.config_path)
+            try:
+                if startup.get("enabled"):
+                    manager.enable()
+                else:
+                    manager.disable()
+                startup["status"] = manager.status().to_dict()
+            except Exception as exc:
+                startup["status"] = {
+                    "ok": False,
+                    "enabled": False,
+                    "detail": (
+                        "开机自启动设置失败，可能被系统权限或安全软件拦截。"
+                        f"原始错误：{exc}"
+                    ),
+                    "command": manager.get_startup_command(),
+                    "executable_path": manager.get_executable_path(),
+                    "is_frozen": bool(getattr(sys, "frozen", False)),
+                }
+                startup["enabled"] = False
+            data["startup"] = startup
+        if "tray" in body:
+            data["tray"] = normalize_tray(body.get("tray"))
+        if "do_not_disturb" in body:
+            data["do_not_disturb"] = normalize_do_not_disturb(body.get("do_not_disturb"))
+        self._save_config_data(data)
+        config = self.server.app_config
+        return {
+            "ok": True,
+            "reminder_policy": asdict(config.reminder_policy),
+            "startup": asdict(config.startup),
+            "startup_status": StartupManager(self.server.config_path).status().to_dict(),
+            "tray": asdict(config.tray),
+            "do_not_disturb": asdict(config.do_not_disturb),
+        }
 
     def _complete_setup(self, body: dict[str, Any]) -> dict[str, Any]:
         location = body.get("location") or {}
@@ -848,6 +925,41 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
         except KeyError:
             return value
 
+    def _target_ids_from_body(self, body: dict[str, Any]) -> list[str] | None:
+        raw = (
+            body.get("wechat_target_ids")
+            or body.get("target_ids")
+            or body.get("targets")
+        )
+        if raw is None:
+            single = body.get("wechat_target_id") or body.get("recipient") or body.get("contact")
+            return [str(single)] if single else None
+        if isinstance(raw, str):
+            return [item.strip() for item in raw.replace("；", ",").split(",") if item.strip()]
+        if isinstance(raw, list):
+            return [str(item).strip() for item in raw if str(item).strip()]
+        return None
+
+    def _update_target_send_status(
+        self,
+        target_id: str,
+        *,
+        sent_at: str,
+        status: str,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        data = self._load_config_data_for_write()
+        for item in data.setdefault("wechat_targets", []):
+            if str(item.get("id")) != target_id:
+                continue
+            item["last_send_at"] = sent_at
+            item["last_send_status"] = status
+            item["last_error_code"] = error_code
+            item["last_error_message"] = error_message
+            self._save_config_data(data)
+            return
+
     def _readiness_block_result(
         self,
         backend: str,
@@ -967,6 +1079,7 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(
                     200,
                     {
+                        "config_version": config.config_version,
                         "app": asdict(config.app),
                         "contact": config.contact,
                         "locations": [asdict(item) for item in config.locations],
@@ -981,10 +1094,20 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
                         "providers": asdict(config.providers),
                         "monitor": asdict(config.monitor),
                         "message": asdict(config.message),
+                        "reminder_policy": asdict(config.reminder_policy),
+                        "startup": asdict(config.startup),
+                        "tray": asdict(config.tray),
+                        "do_not_disturb": asdict(config.do_not_disturb),
+                        "startup_status": StartupManager(self.server.config_path).status().to_dict(),
                         "release": asdict(config.release),
                         "dashboard": self._dashboard_summary(config),
                     },
                 )
+            elif parsed.path == "/api/startup/status":
+                self._send_json(200, StartupManager(self.server.config_path).status().to_dict())
+            elif parsed.path == "/api/busy/status":
+                config = self.server.app_config
+                self._send_json(200, BusyDetector(config.do_not_disturb).should_delay_send().to_dict())
             elif parsed.path == "/api/setup/status":
                 config = self.server.app_config
                 self._send_json(
@@ -1004,6 +1127,9 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/weather/history":
                 limit = int((parse_qs(parsed.query).get("limit") or ["50"])[0] or "50")
                 self._send_json(200, {"history": read_weather_history(limit=limit)})
+            elif parsed.path == "/api/send-history":
+                limit = int((parse_qs(parsed.query).get("limit") or ["50"])[0] or "50")
+                self._send_json(200, {"history": read_send_history(limit=limit)})
             elif parsed.path == "/api/readiness":
                 self._send_json(200, check_readiness(require_wechat=True).to_dict())
             elif parsed.path == "/api/power/status":
@@ -1126,6 +1252,10 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
 
             if parsed.path == "/api/message":
                 self._send_json(200, {"message": self._save_message_config(body)})
+                return
+
+            if parsed.path == "/api/system-settings":
+                self._send_json(200, self._save_system_settings(body))
                 return
 
             if parsed.path == "/api/readiness/check":
@@ -1256,31 +1386,61 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(200, result)
                 return
 
+            if parsed.path == "/api/monitor/pause":
+                data = self._load_config_data_for_write()
+                data.setdefault("monitor", {})["enabled"] = False
+                self._save_config_data(data)
+                self.server.monitor.stop()
+                self._send_json(200, {"ok": True, "enabled": False, "message": "自动化已暂停。"})
+                return
+
+            if parsed.path == "/api/monitor/resume":
+                data = self._load_config_data_for_write()
+                data.setdefault("monitor", {})["enabled"] = True
+                self._save_config_data(data)
+                self.server.monitor.start()
+                self._send_json(200, {"ok": True, "enabled": True, "message": "自动化已恢复。"})
+                return
+
             if parsed.path != "/api/send-weather":
                 self._send_json(404, {"error": "not found"})
                 return
 
             config = self.server.app_config
             location = config.location_by_id(body.get("location_id"))
-            target = config.wechat_target_by_id(
-                str(body.get("wechat_target_id") or body.get("recipient") or body.get("contact") or config.contact)
+            target_values = self._target_ids_from_body(body)
+            targets = select_send_targets(
+                config,
+                target_values,
+                send_all_enabled=bool(body.get("send_all_enabled", False)),
             )
+            if not targets:
+                self._send_error(400, "没有启用的微信发送对象。", context="send_weather")
+                return
+            primary_target = targets[0]
             backend = str(body.get("backend") or "pywinauto-session")
             real = bool(body.get("real", False))
+            dry_run = bool(body.get("dry_run", False)) or not real
+            real = real and not dry_run
+            trigger = str(body.get("trigger") or ("manual" if real else "dry_run"))
             run_id = new_run_id("weather")
             append_step(
                 run_id,
                 "start",
                 "running",
-                f"准备生成 {location.name} 天气并发送到 {target.name}",
+                f"准备生成 {location.name} 天气，目标 {len(targets)} 个",
                 run_type="send_weather",
-                detail={"location_id": location.id, "wechat_target_id": target.id, "real": real},
+                detail={
+                    "location_id": location.id,
+                    "wechat_target_ids": [target.id for target in targets],
+                    "real": real,
+                },
             )
             if real and not config.app.setup_complete:
                 result = SendResult(
                     ok=False,
                     backend=backend,
-                    contact=target.name,
+                    contact=primary_target.name,
                     detail="\u9996\u6b21\u8bbe\u7f6e\u672a\u5b8c\u6210\u3002\u8bf7\u5148\u8bbe\u7f6e\u5929\u6c14\u5730\u5740\u548c\u5fae\u4fe1\u597d\u53cb/\u7fa4\u540d\u79f0\uff0c\u518d\u6267\u884c\u771f\u5b9e\u53d1\u9001\u3002",
                     preview="",
                 )
@@ -1311,8 +1471,19 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
                 daily_prefix=config.message.daily_prefix,
                 daily_style=config.message.daily_style,
             )
+            batch = create_send_batch(
+                trigger=trigger,
+                location=location,
+                message=message,
+                targets=targets,
+                real_send=real,
+            )
             if real:
-                blocked = self._readiness_block_result(backend, target.name, preview=message)
+                blocked = self._readiness_block_result(
+                    backend,
+                    "、".join(target.name for target in targets),
+                    preview=message,
+                )
                 if blocked is not None:
                     append_step(
                         run_id,
@@ -1324,30 +1495,148 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
                     )
                     payload = asdict(blocked)
                     payload["run_id"] = run_id
+                    payload["batch"] = batch.to_dict()
                     self._send_json(409, payload)
                     return
                 append_step(run_id, "readiness", "ok", "发送前检查通过。", run_type="send_weather")
-            sender = choose_sender(
-                real_send=real,
-                backend=backend,
-                window_handle=self.server.window_handle,
-                send_strategy=config.monitor.wechat_send_strategy,
-                allow_send_button_coordinate_fallback=(
-                    config.monitor.allow_send_button_coordinate_fallback
-                ),
-            )
-            result = sender.send(target.name, message)
-            payload = asdict(result)
-            append_step(
-                run_id,
-                "wechat_send" if real else "dry_run",
-                "ok" if result.ok else "failed",
-                result.detail,
-                run_type="send_weather",
-                detail={"diagnostics": result.diagnostics, "error_analysis": result.error_analysis},
+
+            batch.started_at = datetime.now().isoformat(timespec="seconds")
+            if not real:
+                batch.status = "dry_run"
+                batch.finished_at = batch.started_at
+                for attempt in batch.targets:
+                    attempt.status = "skipped"
+                    attempt.started_at = batch.started_at
+                    attempt.finished_at = batch.started_at
+                    attempt.duration_ms = 0
+                append_send_history(batch)
+                result = SendResult(
+                    ok=True,
+                    backend=backend,
+                    contact=primary_target.name,
+                    detail=f"dry-run：已生成天气消息，目标 {len(targets)} 个，未调用微信发送。",
+                    preview=message,
+                )
+                payload = asdict(result)
+                payload.update(
+                    {
+                        "batch": batch.to_dict(),
+                        "summary": batch.summary(),
+                        "contacts": [target.name for target in targets],
+                    }
+                )
+                append_step(
+                    run_id,
+                    "dry_run",
+                    "ok",
+                    result.detail,
+                    run_type="send_weather",
+                    detail=batch.to_dict(),
+                )
+                payload["run_id"] = run_id
+                self._send_json(200, payload)
+                return
+
+            lock = SendTaskLock(owner=batch.batch_id)
+            if not lock.acquire():
+                self._send_error(
+                    409,
+                    "已有微信发送任务正在运行，请等待当前任务完成后再试。",
+                    context="send_weather",
+                    diagnostics=[f"batch_id={batch.batch_id}", f"targets={len(targets)}"],
+                )
+                return
+
+            batch.status = "sending"
+            last_result: SendResult | None = None
+            try:
+                sender = choose_sender(
+                    real_send=True,
+                    backend=backend,
+                    window_handle=self.server.window_handle,
+                    send_strategy=config.monitor.wechat_send_strategy,
+                    allow_send_button_coordinate_fallback=(
+                        config.monitor.allow_send_button_coordinate_fallback
+                    ),
+                )
+                for index, (target, attempt) in enumerate(zip(targets, batch.targets)):
+                    started_at = datetime.now().isoformat(timespec="seconds")
+                    start = time.perf_counter()
+                    append_step(
+                        run_id,
+                        "wechat_send",
+                        "running",
+                        f"发送到 {target.name}",
+                        run_type="send_weather",
+                        detail={"target_id": target.id, "batch_id": batch.batch_id},
+                    )
+                    result = sender.send(target.name, message)
+                    last_result = result
+                    finished_at = datetime.now().isoformat(timespec="seconds")
+                    duration_ms = int((time.perf_counter() - start) * 1000)
+                    apply_send_result(
+                        attempt,
+                        result,
+                        started_at=started_at,
+                        finished_at=finished_at,
+                        duration_ms=duration_ms,
+                        real_send=True,
+                    )
+                    self._update_target_send_status(
+                        target.id,
+                        sent_at=finished_at,
+                        status=attempt.status,
+                        error_code=attempt.error_code,
+                        error_message=attempt.error_message,
+                    )
+                    append_step(
+                        run_id,
+                        "wechat_send",
+                        "ok" if result.ok else "failed",
+                        result.detail,
+                        run_type="send_weather",
+                        detail={
+                            "target_id": target.id,
+                            "batch_id": batch.batch_id,
+                            "diagnostics": result.diagnostics,
+                            "error_analysis": result.error_analysis,
+                        },
+                    )
+                    if index < len(targets) - 1 and target.send_interval_seconds > 0:
+                        time.sleep(target.send_interval_seconds)
+            finally:
+                batch.finished_at = datetime.now().isoformat(timespec="seconds")
+                summary = batch.summary()
+                if summary["failed"] == 0:
+                    batch.status = "success"
+                elif summary["success"] > 0:
+                    batch.status = "partial_success"
+                else:
+                    batch.status = "failed"
+                append_send_history(batch)
+                lock.release()
+
+            if last_result is None:
+                last_result = SendResult(
+                    ok=False,
+                    backend=backend,
+                    contact=primary_target.name,
+                    detail="没有执行任何微信发送对象。",
+                    preview=message,
+                )
+            payload = asdict(last_result)
+            payload.update(
+                {
+                    "ok": batch.summary()["failed"] == 0,
+                    "contact": primary_target.name,
+                    "contacts": [target.name for target in targets],
+                    "preview": message,
+                    "batch": batch.to_dict(),
+                    "summary": batch.summary(),
+                }
             )
             payload["run_id"] = run_id
-            self._send_json(200 if result.ok else 409, payload)
+            self._send_json(200 if payload["ok"] else 409, payload)
         except Exception as exc:
             self._send_error(500, str(exc), context="server")
 
@@ -1366,6 +1655,8 @@ class WeatherRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(200, {"automation_job": self._upsert_job(body, item_id=item_id)})
             elif parsed.path == "/api/message":
                 self._send_json(200, {"message": self._save_message_config(body)})
+            elif parsed.path == "/api/system-settings":
+                self._send_json(200, self._save_system_settings(body))
             else:
                 self._send_json(404, {"error": "not found"})
         except Exception as exc:

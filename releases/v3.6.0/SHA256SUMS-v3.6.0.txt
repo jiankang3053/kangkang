@@ -1,0 +1,2 @@
+47c0524b5e5ba530f9050548e75dd9b2cc24c63144dcd264827a4604a311445a  KangkangWeather-v3.6.0.zip
+edf2d86d0666a5b0ad1f94186091b0807fc3ac7b82f769e2cd5ec1309a65b58c  KangkangWeatherSetup-v3.6.0.exe

@@ -575,6 +575,75 @@
                 </label>
               </div>
             </div>
+            <div class="subsection">
+              <h4>智能提醒与后台运行</h4>
+              <div class="form-line">
+                <label>提醒模式
+                  <select id="assistReminderMode">
+                    <option value="always_full">总是完整提醒</option>
+                    <option value="smart">智能提醒</option>
+                    <option value="abnormal_only">异常天气才提醒</option>
+                    <option value="short_daily">每天简短提醒</option>
+                    <option value="silent">暂停提醒</option>
+                  </select>
+                </label>
+                <label>天气正常时
+                  <select id="assistNormalAction">
+                    <option value="none">不发送</option>
+                    <option value="short">简短一句话</option>
+                    <option value="full">完整提醒</option>
+                  </select>
+                </label>
+                <label>天气异常时
+                  <select id="assistAbnormalAction">
+                    <option value="short">简短提醒</option>
+                    <option value="full">完整提醒</option>
+                    <option value="urgent">加强提醒</option>
+                  </select>
+                </label>
+                <label class="check-label">
+                  <input id="assistStartup" type="checkbox">开机自动启动
+                </label>
+                <label class="check-label">
+                  <input id="assistMinimizeTray" type="checkbox">最小化到托盘
+                </label>
+                <label class="check-label">
+                  <input id="assistCloseTray" type="checkbox">关闭隐藏到托盘
+                </label>
+              </div>
+            </div>
+            <div class="subsection">
+              <h4>勿扰模式</h4>
+              <div class="form-line">
+                <label class="check-label">
+                  <input id="assistDndEnabled" type="checkbox">自动发送前检查忙碌状态
+                </label>
+                <label class="check-label">
+                  <input id="assistDndFullscreen" type="checkbox">检测全屏应用
+                </label>
+                <label class="check-label">
+                  <input id="assistDndProcess" type="checkbox">检测游戏/视频软件
+                </label>
+                <label class="check-label">
+                  <input id="assistDndApp" type="checkbox">检测演示/忙碌窗口
+                </label>
+                <label>忙碌时处理
+                  <select id="assistDndAction">
+                    <option value="delay">延迟发送</option>
+                    <option value="skip">跳过本次</option>
+                    <option value="tray_only">只托盘提醒</option>
+                    <option value="force_send">强制发送</option>
+                  </select>
+                </label>
+                <label>延迟分钟
+                  <input id="assistDndDelay" type="number" min="1" value="10">
+                </label>
+                <label>最大延迟分钟
+                  <input id="assistDndMaxDelay" type="number" min="1" value="60">
+                </label>
+              </div>
+              <p>勿扰检测只判断前台窗口形态和进程名，不截图、不读取窗口内容。</p>
+            </div>
             <div class="row-actions">
               <button id="saveJob" class="secondary">保存任务</button>
               <button id="addJob">新增当前组合任务</button>
@@ -743,6 +812,19 @@
       assistTempChange: document.querySelector("#assistTempChange"),
       assistWeatherUpgrade: document.querySelector("#assistWeatherUpgrade"),
       assistFutureRainUpgrade: document.querySelector("#assistFutureRainUpgrade"),
+      assistReminderMode: document.querySelector("#assistReminderMode"),
+      assistNormalAction: document.querySelector("#assistNormalAction"),
+      assistAbnormalAction: document.querySelector("#assistAbnormalAction"),
+      assistStartup: document.querySelector("#assistStartup"),
+      assistMinimizeTray: document.querySelector("#assistMinimizeTray"),
+      assistCloseTray: document.querySelector("#assistCloseTray"),
+      assistDndEnabled: document.querySelector("#assistDndEnabled"),
+      assistDndFullscreen: document.querySelector("#assistDndFullscreen"),
+      assistDndProcess: document.querySelector("#assistDndProcess"),
+      assistDndApp: document.querySelector("#assistDndApp"),
+      assistDndAction: document.querySelector("#assistDndAction"),
+      assistDndDelay: document.querySelector("#assistDndDelay"),
+      assistDndMaxDelay: document.querySelector("#assistDndMaxDelay"),
       setupOverlay: document.querySelector("#setupOverlay"),
       setupLocationQuery: document.querySelector("#setupLocationQuery"),
       setupLocationCandidates: document.querySelector("#setupLocationCandidates"),
@@ -1454,6 +1536,23 @@
       el.assistTempChange.value = options.temp_change_celsius ?? 3;
       el.assistWeatherUpgrade.checked = options.weather_upgrade_enabled !== false;
       el.assistFutureRainUpgrade.checked = options.future_rain_upgrade_enabled !== false;
+      const policy = appState.reminder_policy || {};
+      el.assistReminderMode.value = policy.mode || "smart";
+      el.assistNormalAction.value = policy.normal_weather_action || "full";
+      el.assistAbnormalAction.value = policy.abnormal_weather_action || "full";
+      const startup = appState.startup || {};
+      const tray = appState.tray || {};
+      const dnd = appState.do_not_disturb || {};
+      el.assistStartup.checked = !!startup.enabled;
+      el.assistMinimizeTray.checked = tray.minimize_to_tray !== false;
+      el.assistCloseTray.checked = tray.close_to_tray !== false;
+      el.assistDndEnabled.checked = dnd.enabled !== false;
+      el.assistDndFullscreen.checked = dnd.detect_fullscreen !== false;
+      el.assistDndProcess.checked = dnd.detect_game_process !== false;
+      el.assistDndApp.checked = dnd.detect_foreground_busy_app !== false;
+      el.assistDndAction.value = dnd.busy_action || "delay";
+      el.assistDndDelay.value = dnd.delay_minutes || 10;
+      el.assistDndMaxDelay.value = dnd.max_delay_minutes || 60;
       renderAssistTimingControls();
       setStatus("已填入当前配置，可核对后应用到这台电脑。", "ok");
     }
@@ -1482,6 +1581,34 @@
         return;
       }
       const data = await apiResult("/api/setup/apply-profile", { method: "POST", body: JSON.stringify(payload) });
+      const system = await apiResult("/api/system-settings", {
+        method: "POST",
+        body: JSON.stringify({
+          reminder_policy: {
+            enabled: true,
+            mode: el.assistReminderMode.value,
+            normal_weather_action: el.assistNormalAction.value,
+            abnormal_weather_action: el.assistAbnormalAction.value
+          },
+          startup: { enabled: el.assistStartup.checked },
+          tray: {
+            enabled: true,
+            minimize_to_tray: el.assistMinimizeTray.checked,
+            close_to_tray: el.assistCloseTray.checked,
+            show_tray_notifications: true
+          },
+          do_not_disturb: {
+            enabled: el.assistDndEnabled.checked,
+            detect_fullscreen: el.assistDndFullscreen.checked,
+            detect_game_process: el.assistDndProcess.checked,
+            detect_foreground_busy_app: el.assistDndApp.checked,
+            busy_action: el.assistDndAction.value,
+            delay_minutes: Number(el.assistDndDelay.value || 10),
+            max_delay_minutes: Number(el.assistDndMaxDelay.value || 60)
+          }
+        })
+      });
+      data.system_settings = system;
       el.result.textContent = formatResult(data);
       await loadState();
       await refreshPreview();
